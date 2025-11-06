@@ -1,6 +1,6 @@
 [package]
 name = "yt-dlp-proxy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Kai"]
 description = "A proxy application for yt-dlp with automatic updates and argument filtering"
