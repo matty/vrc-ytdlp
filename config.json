@@ -1,0 +1,20 @@
+{
+  "ytdlp_location": "tools/yt-dlp.exe",
+  "allowed_args": [
+    "--no-check-certificate",
+    "--no-cache-dir",
+    "--rm-cache-dir",
+    "--get-url"
+  ],
+  "custom_args": [
+    "-f",
+    "\"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\""
+  ],
+  "cookies": false,
+  "cookies_browser": "firefox",
+  "logging": {
+    "max_file_size_mb": 10,
+    "max_archived_logs": 5,
+    "debug_enabled": true
+  }
+}
