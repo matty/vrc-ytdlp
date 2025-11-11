@@ -1,8 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+use std::thread::sleep;
 
 use crate::error::{AppError, Result};
 use crate::logger::Logger;
+use crate::constants::YT_DLP_EXECUTABLE;
+use sysinfo::System;
 
 pub struct Executor {
     exe_dir: PathBuf,
@@ -15,6 +19,12 @@ impl Executor {
     }
 
     pub fn execute(&self, executable_path: &Path, args: &[String]) -> Result<()> {
+        if Self::is_yt_dlp_running() {
+            self.logger
+                .log_warning("Detected an existing yt-dlp process. Skipping new invocation.");
+            return Ok(());
+        }
+
         if args.is_empty() {
             self.logger.log_warning("No arguments provided for yt-dlp");
             return Ok(());
@@ -55,7 +65,7 @@ impl Executor {
         let child = cmd.spawn().map_err(|e| {
             let msg = format!(
                 "Failed to spawn {}: {}",
-                crate::constants::YT_DLP_EXECUTABLE, e
+                YT_DLP_EXECUTABLE, e
             );
             self.logger.log_error(&msg);
             AppError::Execution(msg)
@@ -66,26 +76,35 @@ impl Executor {
 
         let guard = ChildGuard::new(&self.logger, child);
 
-        // Wait for completion
-        let status = guard.wait().map_err(|e| {
-            let msg = format!(
-                "Failed while waiting for {}: {}",
-                crate::constants::YT_DLP_EXECUTABLE, e
-            );
-            self.logger.log_error(&msg);
-            AppError::Execution(msg)
-        })?;
+        // Wait for completion with timeout
+        let status = guard
+            .wait_with_timeout(Duration::from_secs(30))
+            .map_err(|e| {
+                let msg = if e.kind() == std::io::ErrorKind::TimedOut {
+                    format!(
+                        "{} did not respond within 30 seconds and was terminated",
+                        YT_DLP_EXECUTABLE
+                    )
+                } else {
+                    format!(
+                        "Failed while waiting for {}: {}",
+                        YT_DLP_EXECUTABLE, e
+                    )
+                };
+                self.logger.log_error(&msg);
+                AppError::Execution(msg)
+            })?;
 
         if !status.success() {
             let error_msg = if let Some(code) = status.code() {
                 format!(
                     "{} exited with non-zero status code: {}",
-                    crate::constants::YT_DLP_EXECUTABLE, code
+                    YT_DLP_EXECUTABLE, code
                 )
             } else {
                 format!(
                     "{} terminated by signal/unknown status",
-                    crate::constants::YT_DLP_EXECUTABLE
+                    YT_DLP_EXECUTABLE
                 )
             };
             self.logger.log_error(&error_msg);
@@ -96,6 +115,27 @@ impl Executor {
         Ok(())
     }
 
+}
+
+impl Executor {
+    fn is_yt_dlp_running() -> bool {
+        // Build a lowercase set of names to match against
+        let target_full = YT_DLP_EXECUTABLE.to_ascii_lowercase(); // e.g., "yt-dlp.exe"
+        let target_base = target_full
+            .trim_end_matches(".exe")
+            .trim_end_matches(".EXE")
+            .to_string(); // e.g., "yt-dlp"
+
+        let mut sys = System::new();
+        // Refresh only processes (fast enough for our use-case)
+        sys.refresh_processes();
+
+        sys.processes().values().any(|proc| {
+            let name = proc.name().to_ascii_lowercase();
+            // Match exact executable name or base name to be safe across platforms
+            name == target_full || name == target_base || name.contains("yt-dlp")
+        })
+    }
 }
 
 struct ChildGuard<'a> {
@@ -117,6 +157,33 @@ impl<'a> ChildGuard<'a> {
             child.wait()
         } else {
             // Should never happen
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "child already taken",
+            ))
+        }
+    }
+
+    /// Waits for the child to exit up to a timeout; kills it on timeout and returns TimedOut.
+    fn wait_with_timeout(mut self, timeout: Duration) -> std::io::Result<std::process::ExitStatus> {
+        if let Some(mut child) = self.child.take() {
+            let start = Instant::now();
+            loop {
+                match child.try_wait()? {
+                    Some(status) => return Ok(status),
+                    None => {
+                        if start.elapsed() >= timeout {
+                            // Timeout reached: try to kill and wait, then return TimedOut error
+                            self.logger.log_warning("Timeout waiting for child; terminating process...");
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "process timeout"));
+                        }
+                        sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+        } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "child already taken",
