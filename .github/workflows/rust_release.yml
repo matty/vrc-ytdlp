@@ -90,7 +90,6 @@ jobs:
           $zipName = "vrc-ytdlp-$env:VERSION.zip"
           if (Test-Path $zipName) { Remove-Item $zipName -Force }
           $paths = @(
-            "config.json",
             "install.bat",
             "uninstall.bat",
             "target\release\vrc-ytdlp.exe"
