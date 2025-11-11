@@ -167,7 +167,6 @@ impl Logger {
             if archived_path.exists() {
                 if let Ok(metadata) = fs::metadata(&archived_path) {
                     archived_logs.push(ArchivedLogInfo {
-                        path: archived_path,
                         size: metadata.len(),
                         index: i,
                     });
@@ -198,8 +197,9 @@ pub struct LogInfo {
 
 #[derive(Debug)]
 pub struct ArchivedLogInfo {
-    pub path: PathBuf,
+    #[allow(dead_code)]
     pub size: u64,
+    #[allow(dead_code)]
     pub index: u32,
 }
 

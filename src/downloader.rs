@@ -98,7 +98,7 @@ impl Downloader {
         let client = reqwest::Client::new();
         let response = client
             .get(GITHUB_API_URL)
-            .header("User-Agent", "yt-dlp-proxy")
+            .header("User-Agent", "VRC-YtDlp")
             .send()
             .await?;
 

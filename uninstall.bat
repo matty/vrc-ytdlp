@@ -8,7 +8,7 @@ REM ===================================================================
 
 echo.
 echo ========================================
-echo yt-dlp-proxy Uninstallation Script
+echo vrc-ytdlp Uninstallation Script
 echo ========================================
 echo.
 

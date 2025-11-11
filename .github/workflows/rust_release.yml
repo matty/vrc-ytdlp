@@ -78,7 +78,7 @@ jobs:
       - name: Verify executable exists
         shell: pwsh
         run: |
-          $exe = "target\release\yt-dlp-proxy.exe"
+          $exe = "target\release\vrc-ytdlp.exe"
           if (-not (Test-Path $exe)) { throw "Executable not found at $exe" }
 
       - name: Create release ZIP
@@ -87,13 +87,13 @@ jobs:
           VERSION: ${{ steps.get_version.outputs.version }}
         shell: pwsh
         run: |
-          $zipName = "yt-dlp-proxy-$env:VERSION.zip"
+          $zipName = "vrc-ytdlp-$env:VERSION.zip"
           if (Test-Path $zipName) { Remove-Item $zipName -Force }
           $paths = @(
             "config.json",
             "install.bat",
             "uninstall.bat",
-            "target\release\yt-dlp-proxy.exe"
+            "target\release\vrc-ytdlp.exe"
           )
           foreach ($p in $paths) { if (-not (Test-Path $p)) { throw "Required file not found: $p" } }
           Compress-Archive -Path $paths -DestinationPath $zipName -Force
@@ -103,7 +103,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.get_version.outputs.version }}
-          name: yt-dlp-proxy v${{ steps.get_version.outputs.version }}
+          name: vrc-ytdlp v${{ steps.get_version.outputs.version }}
           files: ${{ steps.zip.outputs.zip }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

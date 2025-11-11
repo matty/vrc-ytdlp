@@ -1,8 +1,5 @@
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 use crate::error::{AppError, Result};
 use crate::logger::Logger;
@@ -12,72 +9,86 @@ pub struct Executor {
     pub logger: Logger,
 }
 
-
 impl Executor {
-    /// Creates a new executor instance
     pub fn new(exe_dir: PathBuf, logger: Logger) -> Self {
         Self { exe_dir, logger }
     }
 
-
-    /// Executes yt-dlp with the given arguments - simple and robust
     pub fn execute(&self, executable_path: &Path, args: &[String]) -> Result<()> {
         if args.is_empty() {
             self.logger.log_warning("No arguments provided for yt-dlp");
             return Ok(());
         }
 
-        // Basic validation - just check if executable exists
         if !executable_path.exists() {
-            return Err(AppError::FileNotFound(format!("Executable not found: {:?}", executable_path)));
+            return Err(AppError::FileNotFound(format!(
+                "Executable not found: {:?}",
+                executable_path
+            )));
         }
 
-        self.logger.log_info(&format!("Executing {} with {} arguments", crate::constants::YT_DLP_EXECUTABLE, args.len()));
-        self.logger.log_debug(&format!("Arguments: {:?}", args));
+        self.logger.log_info(&format!(
+            "Executing {} with {} arguments",
+            crate::constants::YT_DLP_EXECUTABLE,
+            args.len()
+        ));
+        self.logger
+            .log_debug(&format!("Arguments: {:?}", args));
 
-        // Set up custom temp directory
-        let temp_dir = self.setup_temp_directory()?;
+        // Use the executable directory as temp directory
+        let temp_dir = self.exe_dir.clone();
 
-        // Create and configure command - keep it simple
+        // Create and configure command - set temp envs to exe dir
         let mut cmd = Command::new(executable_path);
         cmd.args(args)
             .current_dir(&self.exe_dir)
-            .env("TEMP", temp_dir.to_string_lossy().as_ref())
-            .env("TMP", temp_dir.to_string_lossy().as_ref());
+            .env("TEMP", &temp_dir)
+            .env("TMP", &temp_dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
 
-        // Windows process isolation (optional)
-        #[cfg(windows)]
-        {
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        }
+        // Execute with streaming IO
+        self.logger
+            .log_debug(&format!("Spawning process: {:?}", executable_path));
 
-        // Execute and wait - simple approach
-        self.logger.log_debug(&format!("Spawning process: {:?}", executable_path));
-        
-        let output = cmd.output().map_err(|e| {
-            self.logger.log_error(&format!("Failed to execute {}: {}", crate::constants::YT_DLP_EXECUTABLE, e));
-            AppError::Execution(format!("Failed to execute {}: {}", crate::constants::YT_DLP_EXECUTABLE, e))
+        let child = cmd.spawn().map_err(|e| {
+            let msg = format!(
+                "Failed to spawn {}: {}",
+                crate::constants::YT_DLP_EXECUTABLE, e
+            );
+            self.logger.log_error(&msg);
+            AppError::Execution(msg)
         })?;
 
-        // Forward output to console
-        if !output.stdout.is_empty() {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-        }
-        if !output.stderr.is_empty() {
-            eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        }
+        self.logger
+            .log_debug(&format!("Spawned with PID: {}", child.id()));
 
-        // Check exit status
-        if !output.status.success() {
-            let error_msg = format!("{} exited with status: {}", crate::constants::YT_DLP_EXECUTABLE, output.status);
+        let guard = ChildGuard::new(&self.logger, child);
+
+        // Wait for completion
+        let status = guard.wait().map_err(|e| {
+            let msg = format!(
+                "Failed while waiting for {}: {}",
+                crate::constants::YT_DLP_EXECUTABLE, e
+            );
+            self.logger.log_error(&msg);
+            AppError::Execution(msg)
+        })?;
+
+        if !status.success() {
+            let error_msg = if let Some(code) = status.code() {
+                format!(
+                    "{} exited with non-zero status code: {}",
+                    crate::constants::YT_DLP_EXECUTABLE, code
+                )
+            } else {
+                format!(
+                    "{} terminated by signal/unknown status",
+                    crate::constants::YT_DLP_EXECUTABLE
+                )
+            };
             self.logger.log_error(&error_msg);
-            
-            // Log stderr if present
-            if !output.stderr.is_empty() {
-                self.logger.log_debug(&format!("Error output: {}", String::from_utf8_lossy(&output.stderr)));
-            }
-            
             return Err(AppError::Execution(error_msg));
         }
 
@@ -85,19 +96,57 @@ impl Executor {
         Ok(())
     }
 
-    fn setup_temp_directory(&self) -> Result<PathBuf> {
-        let temp_dir = self.exe_dir.join(crate::constants::TEMP_DIR_NAME);
+}
 
-        // Create directory if it doesn't exist
-        if let Err(e) = create_dir_all(&temp_dir) {
-            self.logger.log_warning(&format!("Could not create temp directory: {}", e));
-            // Fall back to system temp if creation fails
-            return Ok(std::env::temp_dir());
+struct ChildGuard<'a> {
+    child: Option<Child>,
+    logger: &'a Logger,
+}
+
+impl<'a> ChildGuard<'a> {
+    fn new(logger: &'a Logger, child: Child) -> Self {
+        Self {
+            child: Some(child),
+            logger,
         }
-
-        self.logger.log_debug(&format!("Using temp directory: {:?}", temp_dir));
-        Ok(temp_dir)
     }
 
+    /// Waits for the child to exit and consumes the guard.
+    fn wait(mut self) -> std::io::Result<std::process::ExitStatus> {
+        if let Some(mut child) = self.child.take() {
+            child.wait()
+        } else {
+            // Should never happen
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "child already taken",
+            ))
+        }
+    }
+}
 
+impl<'a> Drop for ChildGuard<'a> {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            match child.try_wait() {
+                Ok(Some(_status)) => {
+                    // already exited
+                }
+                Ok(None) => {
+                    // Still running -> try to terminate and wait
+                    self.logger
+                        .log_warning("Child process still running, attempting to terminate...");
+                    if let Err(e) = child.kill() {
+                        self.logger
+                            .log_warning(&format!("Failed to terminate child: {}", e));
+                    }
+                    let _ = child.wait();
+                }
+                Err(e) => {
+                    self.logger
+                        .log_warning(&format!("Failed to query child status: {}", e));
+                }
+            }
+        }
+    }
 }

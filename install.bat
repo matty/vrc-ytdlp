@@ -23,7 +23,7 @@ if %errorLevel% neq 0 (
 )
 
 REM Define paths
-set "SOURCE_EXE=%~dp0yt-dlp-proxy.exe"
+set "SOURCE_EXE=%~dp0vrc-ytdlp.exe"
 set "VRCHAT_TOOLS_DIR=%LOCALAPPDATA%Low\VRChat\VRChat\Tools"
 set "DESTINATION=%VRCHAT_TOOLS_DIR%\yt-dlp.exe"
 set "SOURCE_CONFIG=%~dp0config.json"

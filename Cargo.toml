@@ -1,16 +1,16 @@
 [package]
-name = "yt-dlp-proxy"
+name = "vrc-ytdlp"
 version = "0.1.1"
 edition = "2021"
 authors = ["Kai"]
-description = "A proxy application for yt-dlp with automatic updates and argument filtering"
+description = "Proxy requests from VRC to YtDlp"
 repository = ""
 license = "MIT"
 keywords = ["yt-dlp"]
 categories = ["command-line-utilities", "multimedia"]
 
 [[bin]]
-name = "yt-dlp-proxy"
+name = "vrc-ytdlp"
 path = "src/main.rs"
 
 [dependencies]

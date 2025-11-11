@@ -39,16 +39,13 @@ impl Default for AppConfig {
         Self {
             ytdlp_location: "tools/yt-dlp.exe".to_string(),
             allowed_args: vec![
-                "--no-check-certificate".to_string(),
-                "--no-cache-dir".to_string(),
-                "--rm-cache-dir".to_string(),
-                "-f".to_string(),
                 "--get-url".to_string(),
             ],
             custom_args: vec![
-                // Add your custom static args here, e.g.:
+                "--no-check-certificate".to_string(),
+                "--no-warnings".to_string(),
                 "-f".to_string(),
-                "\"bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best\"".to_string(),
+                "best[height<=1080][protocol^=m3u8]".to_string(),
             ],
             cookies: false,
             cookies_browser: "firefox".to_string(),

@@ -1,7 +1,6 @@
 pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const VERSION_FILE_NAME: &str = "version.txt";
 pub const GITHUB_API_URL: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-pub const TEMP_DIR_NAME: &str = "temp";
 pub const YT_DLP_EXECUTABLE: &str = "yt-dlp.exe";
 
 /// Default configuration values

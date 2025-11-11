@@ -1,5 +1,3 @@
-//! proxy requests from vrchat to yt-dlp
-
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -30,11 +28,6 @@ async fn main() -> Result<()> {
     // Create logger with configuration from app config
     let log_config = LogConfig::from(&app_config.logging);
     let logger = Logger::with_config(runtime_config.log_path.clone(), log_config);
-
-    // Log startup information
-    logger.log_info(&format!("Arguments: {:?}", runtime_config.original_args));
-    logger.log_info(&format!("Current executable: {:?}", env::args().next().unwrap_or_else(|| "unknown".to_string())));
-    logger.log_info(&format!("Current working directory: {:?}", runtime_config.app_dir));
 
     // Log configuration information
     let log_info = logger.get_log_info();
@@ -75,6 +68,9 @@ async fn main() -> Result<()> {
         ArgumentParser::filter_arguments(&runtime_config.yt_dlp_args, &app_config)
     };
 
+    // Log the actual arguments that will be passed to yt-dlp
+    logger.log_info(&format!("Arguments: {:?}", yt_dlp_args));
+
     // Execute yt-dlp with process isolation
     let executor = Executor::new(runtime_config.app_dir, logger);
     let executable_path = downloader.get_executable_path();
@@ -91,7 +87,6 @@ async fn main() -> Result<()> {
 
 /// Runtime configuration derived from environment
 struct RuntimeConfig {
-    original_args: Vec<String>,
     yt_dlp_args: Vec<String>,
     app_dir: PathBuf,
     log_path: PathBuf,
@@ -118,14 +113,9 @@ impl RuntimeConfig {
         };
 
         Ok(Self {
-            original_args: args,
             yt_dlp_args,
             app_dir,
             log_path,
         })
     }
-}
-
-fn print_help() {
-    println!("Usage: yt-dlp-proxy [yt-dlp arguments...]");
 }
