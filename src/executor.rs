@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::process as std_process;
 use std::time::{Duration, Instant};
 use std::thread::sleep;
 
@@ -19,7 +20,7 @@ impl Executor {
     }
 
     pub fn execute(&self, executable_path: &Path, args: &[String]) -> Result<()> {
-        if Self::is_yt_dlp_running() {
+        if Self::is_yt_dlp_running(executable_path) {
             self.logger
                 .log_warning("Detected an existing yt-dlp process. Skipping new invocation.");
             return Ok(());
@@ -58,7 +59,6 @@ impl Executor {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
-        // Execute with streaming IO
         self.logger
             .log_debug(&format!("Spawning process: {:?}", executable_path));
 
@@ -118,22 +118,33 @@ impl Executor {
 }
 
 impl Executor {
-    fn is_yt_dlp_running() -> bool {
-        // Build a lowercase set of names to match against
-        let target_full = YT_DLP_EXECUTABLE.to_ascii_lowercase(); // e.g., "yt-dlp.exe"
-        let target_base = target_full
-            .trim_end_matches(".exe")
-            .trim_end_matches(".EXE")
-            .to_string(); // e.g., "yt-dlp"
+    fn is_yt_dlp_running(target_executable_path: &Path) -> bool {
+        let target_file_lc = target_executable_path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_else(|| YT_DLP_EXECUTABLE.to_ascii_lowercase());
+
+        let self_pid = std_process::id();
 
         let mut sys = System::new();
-        // Refresh only processes (fast enough for our use-case)
         sys.refresh_processes();
 
         sys.processes().values().any(|proc| {
-            let name = proc.name().to_ascii_lowercase();
-            // Match exact executable name or base name to be safe across platforms
-            name == target_full || name == target_base || name.contains("yt-dlp")
+            if proc.pid().as_u32() == self_pid {
+                return false;
+            }
+
+            if let Some(exe_path) = proc.exe() {
+                if let Some(proc_file_name) = exe_path.file_name() {
+                    let proc_file_lc = proc_file_name.to_string_lossy().to_ascii_lowercase();
+                    if proc_file_lc == target_file_lc {
+                        return true;
+                    }
+                }
+            }
+
+            let name_lc = proc.name().to_ascii_lowercase();
+            name_lc == target_file_lc
         })
     }
 }
