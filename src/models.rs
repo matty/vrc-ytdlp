@@ -44,6 +44,7 @@ impl Default for AppConfig {
             custom_args: vec![
                 "--no-check-certificate".to_string(),
                 "--no-warnings".to_string(),
+                "--no-cache-dir".to_string(),
                 "-f".to_string(),
                 "best[height<=1080][protocol^=m3u8]".to_string(),
             ],
