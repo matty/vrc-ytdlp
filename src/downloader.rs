@@ -1,152 +1,158 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 
-use chrono::{Duration, Utc};
+use anyhow::{Context, Result};
+use serde::Deserialize;
 
-use crate::constants::{GITHUB_API_URL, VERSION_FILE_NAME, YT_DLP_EXECUTABLE};
-use crate::error::{AppError, Result};
-use crate::logger::Logger;
-use crate::models::{GitHubRelease, VersionInfo};
+use crate::Config;
 
-pub struct Downloader {
-    exe_path: PathBuf,
-    exe_dir: PathBuf,
-    logger: Logger,
+const GITHUB_API_URL: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
+const ASSET_NAME: &str = "yt-dlp.exe";
+
+#[derive(Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    assets: Vec<GitHubAsset>,
 }
 
-impl Downloader {
-    pub fn new(exe_path: PathBuf, logger: Logger) -> Self {
-        let exe_dir = exe_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+#[derive(Deserialize)]
+struct GitHubAsset {
+    name: String,
+    browser_download_url: String,
+}
 
-        if let Err(e) = fs::create_dir_all(&exe_dir) {
-            logger.log_error(&format!("Failed to create yt-dlp directory: {}", e));
-        }
+pub async fn ensure_ytdlp(exe_path: &Path, config: &Config) -> Result<()> {
+    let exe_dir = exe_path.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(exe_dir).context("creating yt-dlp directory")?;
 
-        Self { exe_path, exe_dir, logger }
-    }
+    let version_path = exe_dir.join("version.txt");
 
-    pub fn get_executable_path(&self) -> PathBuf {
-        self.exe_path.clone()
-    }
-
-    pub fn executable_exists(&self) -> bool {
-        self.exe_path.exists()
-    }
-
-    pub async fn download_latest(&self) -> Result<()> {
-        self.logger.log_info("Starting yt-dlp download...");
-
-        let release = self.get_latest_release().await?;
-        let asset = self.find_windows_executable(&release)?;
-
-        self.logger.log_info(&format!("Downloading from: {}", asset.browser_download_url));
-
-        let bytes = self.download_file(&asset.browser_download_url).await?;
-        self.save_executable(&bytes)?;
-        self.save_version_info(&release.tag_name)?;
-
-        self.logger.log_info(&format!("Successfully downloaded yt-dlp version: {}", release.tag_name));
-
-        Ok(())
-    }
-
-    pub async fn check_and_update(&self) -> Result<()> {
-        let version_path = self.exe_dir.join(VERSION_FILE_NAME);
-
-        let mut version_info = self.load_version_info(&version_path)?;
-
-        if !self.should_check_for_updates(&version_info) {
+    if exe_path.exists() {
+        // Check if update is needed
+        if !should_check_update(&version_path, config.update_check_days) {
+            tracing::debug!("skipping update check (checked recently)");
             return Ok(());
         }
 
-        self.logger.log_info("Checking for yt-dlp updates...");
-
-        let latest_version = self.get_latest_version().await?;
-        version_info.last_check = Some(Utc::now());
-
-        if version_info.version != latest_version {
-            self.logger.log_info(&format!(
-                "New version available: {} (current: {})",
-                latest_version,
-                version_info.version
-            ));
-
-            self.download_latest().await?;
-        } else {
-            self.logger.log_info(&format!("yt-dlp is up to date: {}", version_info.version));
-            self.save_version_info_to_file(&version_info, &version_path)?;
+        match try_update(exe_path, &version_path).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!("update check failed, continuing with existing binary: {e}");
+            }
         }
-
-        Ok(())
+    } else {
+        tracing::info!("yt-dlp not found, downloading...");
+        download_latest(exe_path, &version_path).await?;
+        tracing::info!("yt-dlp downloaded successfully");
     }
 
-    async fn get_latest_version(&self) -> Result<String> {
-        let release = self.get_latest_release().await?;
-        Ok(release.tag_name)
+    Ok(())
+}
+
+fn should_check_update(version_path: &Path, check_days: u64) -> bool {
+    let mtime = match fs::metadata(version_path).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return true,
+    };
+
+    let age = SystemTime::now()
+        .duration_since(mtime)
+        .unwrap_or(Duration::MAX);
+
+    age > Duration::from_secs(check_days * 86400)
+}
+
+async fn try_update(exe_path: &Path, version_path: &Path) -> Result<()> {
+    let client = build_client()?;
+    let release = fetch_release(&client).await?;
+
+    let current_version = fs::read_to_string(version_path).unwrap_or_default();
+    let current_version = current_version.trim();
+
+    if current_version == release.tag_name {
+        // Same version — touch the file to reset check interval
+        tracing::info!(version = %release.tag_name, "yt-dlp is up to date");
+        fs::write(version_path, &release.tag_name).ok();
+        return Ok(());
     }
 
-    async fn get_latest_release(&self) -> Result<GitHubRelease> {
-        let client = reqwest::Client::new();
-        let response = client
-            .get(GITHUB_API_URL)
-            .header("User-Agent", "VRC-YtDlp")
-            .send()
-            .await?;
+    tracing::info!(
+        current = current_version,
+        latest = %release.tag_name,
+        "new yt-dlp version available, updating"
+    );
 
-        let release: GitHubRelease = response.json().await?;
-        Ok(release)
+    download_release(&client, &release, exe_path, version_path).await
+}
+
+async fn download_latest(exe_path: &Path, version_path: &Path) -> Result<()> {
+    let client = build_client()?;
+    let release = fetch_release(&client).await?;
+    download_release(&client, &release, exe_path, version_path).await
+}
+
+async fn download_release(
+    client: &reqwest::Client,
+    release: &GitHubRelease,
+    exe_path: &Path,
+    version_path: &Path,
+) -> Result<()> {
+    let asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == ASSET_NAME)
+        .context("yt-dlp.exe not found in release assets")?;
+
+    tracing::info!(url = %asset.browser_download_url, "downloading yt-dlp");
+
+    let bytes = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await?
+        .error_for_status()
+        .context("downloading yt-dlp binary")?
+        .bytes()
+        .await?;
+
+    let tmp_path = exe_path.with_extension("exe.tmp");
+
+    // Write to temp, then replace
+    if let Err(e) = write_and_replace(&tmp_path, exe_path, &bytes) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
     }
 
-    fn find_windows_executable<'a>(&self, release: &'a GitHubRelease) -> Result<&'a crate::models::GitHubAsset> {
-        release.assets.iter()
-            .find(|asset| asset.name == YT_DLP_EXECUTABLE)
-            .ok_or_else(|| AppError::Download(format!("Could not find {} in release assets", YT_DLP_EXECUTABLE)))
+    fs::write(version_path, &release.tag_name).context("writing version file")?;
+    Ok(())
+}
+
+fn write_and_replace(tmp: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
+    fs::write(tmp, bytes).context("writing temp file")?;
+
+    if target.exists() {
+        fs::remove_file(target).context("removing old binary")?;
     }
 
-    async fn download_file(&self, url: &str) -> Result<bytes::Bytes> {
-        let client = reqwest::Client::new();
-        let response = client.get(url).send().await?;
-        let bytes = response.bytes().await?;
-        Ok(bytes)
-    }
+    fs::rename(tmp, target).context("renaming temp to target")
+}
 
-    fn save_executable(&self, bytes: &[u8]) -> Result<()> {
-        fs::write(&self.exe_path, bytes)?;
-        Ok(())
-    }
+fn build_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent("VRC-YtDlp")
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("building HTTP client")
+}
 
-    fn save_version_info(&self, version: &str) -> Result<()> {
-        let version_info = VersionInfo {
-            version: version.to_string(),
-            last_check: Some(Utc::now()),
-        };
-
-        let version_path = self.exe_dir.join(VERSION_FILE_NAME);
-        self.save_version_info_to_file(&version_info, &version_path)
-    }
-
-    fn save_version_info_to_file(&self, version_info: &VersionInfo, path: &Path) -> Result<()> {
-        let version_json = serde_json::to_string(version_info)?;
-        fs::write(path, version_json)?;
-        Ok(())
-    }
-
-    fn load_version_info(&self, version_path: &Path) -> Result<VersionInfo> {
-        if version_path.exists() {
-            let content = fs::read_to_string(version_path)?;
-            let version_info = serde_json::from_str::<VersionInfo>(&content)
-                .unwrap_or_default();
-            Ok(version_info)
-        } else {
-            Ok(VersionInfo::default())
-        }
-    }
-
-    fn should_check_for_updates(&self, version_info: &VersionInfo) -> bool {
-        if let Some(last_check) = version_info.last_check {
-            Utc::now() - last_check > Duration::days(crate::constants::defaults::UPDATE_CHECK_DAYS)
-        } else {
-            true
-        }
-    }
+async fn fetch_release(client: &reqwest::Client) -> Result<GitHubRelease> {
+    client
+        .get(GITHUB_API_URL)
+        .send()
+        .await?
+        .error_for_status()
+        .context("fetching latest release")?
+        .json()
+        .await
+        .context("parsing release JSON")
 }

@@ -1,139 +1,277 @@
-use std::env;
-use std::path::{Path, PathBuf};
-
-mod args;
-mod config;
-mod constants;
 mod downloader;
-mod error;
 mod executor;
-mod logger;
-mod models;
 
-use args::ArgumentParser;
-use config::ConfigManager;
-use downloader::Downloader;
-use error::Result;
-use executor::Executor;
-use logger::{LogConfig, Logger};
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-#[tokio::main]
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+
+use downloader::ensure_ytdlp;
+use executor::run_ytdlp;
+
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
-    
-    let early_app_dir = env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let early_log_path = early_app_dir.join("logs.log");
-    let early_logger = Logger::with_config(early_log_path, LogConfig::default());
-
-    let runtime_config = match RuntimeConfig::from_env() {
-        Ok(config) => config,
-        Err(e) => {
-            early_logger.log_error(&format!("Failed to initialize runtime config: {}", e));
-            return Ok(());
-        }
-    };
-
-    let config_manager = ConfigManager::new(runtime_config.app_dir.clone());
-    let app_config = match config_manager.load_config() {
-        Ok(config) => config,
-        Err(e) => {
-            early_logger.log_error(&format!("Failed to load config: {}", e));
-            return Ok(());
-        }
-    };
-
-    let log_config = LogConfig::from(&app_config.logging);
-    let logger = Logger::with_config(runtime_config.log_path.clone(), log_config);
-
-    let log_info = logger.get_log_info();
-    logger.log_debug(&format!("Log file: {}", log_info.current_log_path.display()));
-    logger.log_debug(&format!("Current log size: {} bytes", log_info.current_size));
-    logger.log_debug(&format!("Max log size: {} bytes", log_info.max_size));
-    logger.log_debug(&format!("Archived logs: {}", log_info.archived_logs.len()));
-
-    if log_info.is_near_rotation() {
-        logger.log_warning("Log file is approaching rotation threshold");
-    }
-
-    logger.log_info(&format!("yt-dlp location: {}", app_config.ytdlp_location));
-
-    let ytdlp_path = match config_manager.get_ytdlp_path(&app_config, &runtime_config.app_dir) {
-        Ok(path) => path,
-        Err(e) => {
-            logger.log_error(&format!("Failed to resolve yt-dlp path: {}", e));
-            return Ok(());
-        }
-    };
-    
-    if ytdlp_path.as_os_str().is_empty() {
-        return Ok(());
-    }
-    
-    logger.log_info(&format!("yt-dlp full path: {}", ytdlp_path.display()));
-
-    let downloader_logger = Logger::with_config(runtime_config.log_path.clone(), log_config);
-    let downloader = Downloader::new(ytdlp_path.clone(), downloader_logger);
-
-    if !downloader.executable_exists() {
-        logger.log_info(&format!("{} not found, downloading...", ytdlp_path.display()));
-        if let Err(e) = downloader.download_latest().await {
-            logger.log_error(&format!("Failed to download yt-dlp: {}", e));
-            return Ok(());
-        }
-    } else {
-        if let Err(e) = downloader.check_and_update().await {
-            logger.log_error(&format!("Failed to check for updates: {}", e));
-        }
-    }
-
-    let yt_dlp_args = if app_config.logging.debug_enabled {
-        ArgumentParser::filter_arguments_with_logger(&runtime_config.yt_dlp_args, &app_config, Some(&logger))
-    } else {
-        ArgumentParser::filter_arguments(&runtime_config.yt_dlp_args, &app_config)
-    };
-
-    logger.log_info(&format!("Arguments: {:?}", yt_dlp_args));
-
-    let executor = Executor::new(runtime_config.app_dir, logger);
-    let executable_path = downloader.get_executable_path();
-    
-    match executor.execute(&executable_path, &yt_dlp_args) {
-        Ok(_) => executor.logger.log_info("Success"),
-        Err(e) => executor.logger.log_error(&format!("Failed: {}", e)),
-    }
-
+    let app_dir = exe_dir()?;
+    let _guard = setup_logging(&app_dir);
+    let config = load_config(&app_dir.join("config.json"))?;
+    let ytdlp_path = resolve_ytdlp_path(&config, &app_dir)?;
+    ensure_ytdlp(&ytdlp_path, &config).await?;
+    let input_args: Vec<String> = env::args().skip(1).collect();
+    let args = filter_args(&input_args, &config);
+    tracing::info!(args = ?args, "executing yt-dlp");
+    run_ytdlp(
+        &ytdlp_path,
+        &args,
+        Duration::from_secs(config.execution_timeout_secs),
+    )?;
     Ok(())
 }
 
-struct RuntimeConfig {
-    yt_dlp_args: Vec<String>,
-    app_dir: PathBuf,
-    log_path: PathBuf,
+// --- Config ---
+
+fn default_ytdlp_location() -> String {
+    "tools/yt-dlp.exe".into()
+}
+fn default_allowed_args() -> Vec<String> {
+    vec!["--get-url".into()]
+}
+fn default_custom_args() -> Vec<String> {
+    vec![
+        "--no-check-certificate".into(),
+        "--no-warnings".into(),
+        "--no-cache-dir".into(),
+        "-f".into(),
+        "best[height<=1080][protocol^=m3u8]/best[height<=1080][protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=m3u8]/best".into(),
+    ]
+}
+fn default_cookies_browser() -> String {
+    "firefox".into()
+}
+fn default_execution_timeout_secs() -> u64 {
+    120
+}
+fn default_update_check_days() -> u64 {
+    1
 }
 
-impl RuntimeConfig {
-    fn from_env() -> Result<Self> {
-        let args: Vec<String> = env::args().collect();
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    #[serde(default = "default_ytdlp_location")]
+    pub ytdlp_location: String,
+    #[serde(default = "default_allowed_args")]
+    pub allowed_args: Vec<String>,
+    #[serde(default = "default_custom_args")]
+    pub custom_args: Vec<String>,
+    #[serde(default)]
+    pub cookies: bool,
+    #[serde(default = "default_cookies_browser")]
+    pub cookies_browser: String,
+    #[serde(default = "default_execution_timeout_secs")]
+    pub execution_timeout_secs: u64,
+    #[serde(default = "default_update_check_days")]
+    pub update_check_days: u64,
+}
 
-        let app_dir = match env::current_exe() {
-            Ok(exe_path) => exe_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
-            Err(_) => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-        };
-
-        let log_path = app_dir.join("logs.log");
-
-        let yt_dlp_args = if args.len() > 1 {
-            args.iter().skip(1).cloned().collect::<Vec<String>>()
-        } else {
-            Vec::new()
-        };
-
-        Ok(Self {
-            yt_dlp_args,
-            app_dir,
-            log_path,
-        })
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            ytdlp_location: default_ytdlp_location(),
+            allowed_args: default_allowed_args(),
+            custom_args: default_custom_args(),
+            cookies: false,
+            cookies_browser: default_cookies_browser(),
+            execution_timeout_secs: default_execution_timeout_secs(),
+            update_check_days: default_update_check_days(),
+        }
     }
+}
+
+fn load_config(path: &Path) -> Result<Config> {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let config = Config::default();
+            write_config(path, &config)?;
+            return Ok(config);
+        }
+        Err(e) => return Err(e).context("reading config file"),
+    };
+
+    let mut config: Config = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("invalid config, resetting to defaults: {e}");
+            let config = Config::default();
+            write_config(path, &config)?;
+            return Ok(config);
+        }
+    };
+
+    // Migrate old allowed_args_with_values format
+    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Some(arr) = raw
+            .get("allowed_args_with_values")
+            .and_then(|v| v.as_array())
+        {
+            for val in arr {
+                if let Some(s) = val.as_str() {
+                    let entry = if s.ends_with('=') {
+                        s.to_string()
+                    } else {
+                        format!("{}=", s)
+                    };
+                    if !config.allowed_args.contains(&entry) {
+                        config.allowed_args.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(config)
+}
+
+fn write_config(path: &Path, config: &Config) -> Result<()> {
+    let json = serde_json::to_string_pretty(config)?;
+    fs::write(path, json).context("writing config file")
+}
+
+// --- Arg Filtering ---
+
+fn filter_args(input: &[String], config: &Config) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < input.len() {
+        let arg = &input[i];
+
+        if let Some(entry) = find_allowed(arg, &config.allowed_args) {
+            if entry.ends_with('=') {
+                // Value-taking arg
+                if arg.contains('=') {
+                    // Inline form: --flag=value
+                    result.push(arg.clone());
+                    i += 1;
+                } else if i + 1 < input.len() {
+                    // Two-arg form: --flag value
+                    result.push(arg.clone());
+                    result.push(input[i + 1].clone());
+                    i += 2;
+                } else {
+                    // Flag with no value following — drop it
+                    tracing::debug!(arg, "dropping value-taking arg with no value");
+                    i += 1;
+                }
+            } else {
+                // Standalone flag
+                result.push(arg.clone());
+                i += 1;
+            }
+        } else {
+            tracing::debug!(arg, "dropping disallowed arg");
+            i += 1;
+        }
+    }
+
+    result.extend(config.custom_args.iter().cloned());
+
+    if config.cookies {
+        result.push(format!("--cookies-from-browser={}", config.cookies_browser));
+    }
+
+    result
+}
+
+fn find_allowed<'a>(arg: &str, allowed: &'a [String]) -> Option<&'a str> {
+    for entry in allowed {
+        if entry.ends_with('=') {
+            let prefix = &entry[..entry.len() - 1];
+            if arg == prefix || arg.starts_with(entry.as_str()) {
+                return Some(entry);
+            }
+        } else if arg == entry.as_str() {
+            return Some(entry);
+        }
+    }
+    None
+}
+
+// --- Logging ---
+
+fn setup_logging(app_dir: &Path) -> tracing_appender::non_blocking::WorkerGuard {
+    let file_appender = tracing_appender::rolling::daily(app_dir, "vrc-ytdlp.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    cleanup_old_logs(app_dir);
+    guard
+}
+
+fn cleanup_old_logs(dir: &Path) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut log_files: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("vrc-ytdlp.log."))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    log_files.sort();
+
+    if log_files.len() > 3 {
+        for old in &log_files[..log_files.len() - 3] {
+            let _ = fs::remove_file(old);
+        }
+    }
+}
+
+// --- Path Resolution ---
+
+fn exe_dir() -> Result<PathBuf> {
+    let exe = env::current_exe().context("cannot determine executable path")?;
+    Ok(exe.parent().unwrap_or(Path::new(".")).to_path_buf())
+}
+
+fn resolve_ytdlp_path(config: &Config, app_dir: &Path) -> Result<PathBuf> {
+    let loc = &config.ytdlp_location;
+
+    let resolved = if Path::new(loc).is_absolute() {
+        PathBuf::from(loc)
+    } else {
+        app_dir.join(loc.replace('/', std::path::MAIN_SEPARATOR_STR))
+    };
+
+    if let Ok(current_exe) = env::current_exe() {
+        if resolved.exists() {
+            let a = fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+            let b = fs::canonicalize(&current_exe).unwrap_or(current_exe);
+            if a == b {
+                bail!(
+                    "ytdlp_location ('{}') points to this executable. Configure a different path.",
+                    loc
+                );
+            }
+        }
+    }
+
+    Ok(resolved)
 }

@@ -93,6 +93,13 @@ if %errorLevel% neq 0 (
 echo File copied successfully
 
 echo.
+echo Setting permissions...
+icacls "%DESTINATION%" /inheritance:r /grant "%USERNAME%":RX /grant "System":F /grant "Administrators":F
+if %errorLevel% neq 0 (
+    echo WARNING: Failed to set permissions.
+)
+
+echo.
 echo ========================================
 echo Installation completed successfully!
 echo ========================================
