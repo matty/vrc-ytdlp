@@ -1,0 +1,17 @@
+{
+  "ytdlp_location": "tools/yt-dlp.exe",
+  "allowed_args": [
+    "--get-url"
+  ],
+  "custom_args": [
+    "--no-check-certificate",
+    "--no-warnings",
+    "--no-cache-dir",
+    "-f",
+    "best[height<=1080][protocol^=m3u8]/best[height<=1080][protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=m3u8]/best"
+  ],
+  "cookies": true,
+  "cookies_browser": "firefox",
+  "execution_timeout_secs": 120,
+  "update_check_days": 1
+}

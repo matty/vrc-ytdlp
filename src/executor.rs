@@ -5,20 +5,34 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-pub fn run_ytdlp(exe_path: &Path, args: &[String], timeout: Duration) -> Result<()> {
+fn spawn_ytdlp(
+    exe_path: &Path,
+    args: &[String],
+    capture_stdout: bool,
+) -> Result<std::process::Child> {
     let work_dir = exe_path.parent().unwrap_or(Path::new("."));
+    let tmp_dir = work_dir.join("tmp");
+    std::fs::create_dir_all(&tmp_dir).context("creating tmp directory next to yt-dlp")?;
 
-    let mut child = Command::new(exe_path)
+    let stdout = if capture_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    };
+
+    Command::new(exe_path)
         .args(args)
         .current_dir(work_dir)
+        .env("TEMP", &tmp_dir)
+        .env("TMP", &tmp_dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
+        .stdout(stdout)
         .stderr(Stdio::inherit())
         .spawn()
-        .context("spawning yt-dlp")?;
+        .context("spawning yt-dlp")
+}
 
-    let _job = JobObject::attach(&child).context("creating job object for yt-dlp")?;
-
+fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<()> {
     let start = Instant::now();
     loop {
         match child.try_wait()? {
@@ -45,6 +59,13 @@ pub fn run_ytdlp(exe_path: &Path, args: &[String], timeout: Duration) -> Result<
         }
     }
 }
+
+pub fn run_ytdlp(exe_path: &Path, args: &[String], timeout: Duration) -> Result<()> {
+    let mut child = spawn_ytdlp(exe_path, args, false)?;
+    let _job = JobObject::attach(&child).context("creating job object for yt-dlp")?;
+    wait_with_timeout(&mut child, timeout)
+}
+
 
 // --- Windows Job Object RAII wrapper ---
 

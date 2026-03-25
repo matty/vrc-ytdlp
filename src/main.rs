@@ -1,5 +1,6 @@
 mod downloader;
 mod executor;
+mod server;
 
 use std::env;
 use std::fs;
@@ -14,20 +15,106 @@ use executor::run_ytdlp;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+
+    // Handle --serve mode: run as background media server
+    if raw_args.iter().any(|a| a == "--serve") {
+        let port = parse_flag_value(&raw_args, "--port")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_server_port());
+        let idle_timeout = parse_flag_value(&raw_args, "--idle-timeout")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default_server_idle_timeout_secs());
+
+        let app_dir = exe_dir()?;
+        let _guard = setup_logging(&app_dir);
+        return server::run_server(port, idle_timeout).await;
+    }
+
     let app_dir = exe_dir()?;
     let _guard = setup_logging(&app_dir);
     let config = load_config(&app_dir.join("config.json"))?;
     let ytdlp_path = resolve_ytdlp_path(&config, &app_dir)?;
     ensure_ytdlp(&ytdlp_path, &config).await?;
-    let input_args: Vec<String> = env::args().skip(1).collect();
-    let args = filter_args(&input_args, &config);
-    tracing::info!(args = ?args, "executing yt-dlp");
-    run_ytdlp(
-        &ytdlp_path,
-        &args,
-        Duration::from_secs(config.execution_timeout_secs),
-    )?;
+    let args = filter_args(&raw_args, &config);
+
+    // Check if this is a --get-url request — route through media server
+    let is_get_url = args.iter().any(|a| a == "--get-url");
+
+    if is_get_url {
+        // Extract the video URL from filtered args (positional arg)
+        let video_url = args
+            .iter()
+            .find(|a| a.starts_with("http://") || a.starts_with("https://"))
+            .context("no video URL found in args")?
+            .clone();
+
+        tracing::info!(video_url = %video_url, "routing --get-url through media server");
+
+        let url = ensure_server_and_stream(
+            &config,
+            &video_url,
+            &ytdlp_path.to_string_lossy(),
+            &args,
+        )
+        .await?;
+        println!("{url}");
+    } else {
+        tracing::info!(args = ?args, "executing yt-dlp");
+        run_ytdlp(
+            &ytdlp_path,
+            &args,
+            Duration::from_secs(config.execution_timeout_secs),
+        )?;
+    }
+
     Ok(())
+}
+
+async fn ensure_server_and_stream(
+    config: &Config,
+    video_url: &str,
+    ytdlp_path: &str,
+    ytdlp_args: &[String],
+) -> Result<String> {
+    let port = config.server_port;
+    let idle_timeout = config.server_idle_timeout_secs;
+
+    // Check if server is already running
+    if !server::check_server_health(port).await {
+        tracing::info!("media server not running, starting...");
+        server::spawn_server_process(port, idle_timeout)?;
+
+        // Wait for server to come up
+        let mut attempts = 0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if server::check_server_health(port).await {
+                tracing::info!("media server is ready");
+                break;
+            }
+            attempts += 1;
+            if attempts > 50 {
+                bail!("media server failed to start within 5 seconds");
+            }
+        }
+    }
+
+    let stream_id =
+        server::register_stream_with_server(port, video_url, ytdlp_path, ytdlp_args).await?;
+    let url = server::stream_url(port, &stream_id);
+    tracing::info!(url = %url, "stream registered");
+    Ok(url)
+}
+
+fn parse_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().map(|s| s.as_str());
+        }
+    }
+    None
 }
 
 // --- Config ---
@@ -44,7 +131,7 @@ fn default_custom_args() -> Vec<String> {
         "--no-warnings".into(),
         "--no-cache-dir".into(),
         "-f".into(),
-        "best[height<=1080][protocol^=m3u8]/best[height<=1080][protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=m3u8]/best".into(),
+        "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best".into(),
     ]
 }
 fn default_cookies_browser() -> String {
@@ -55,6 +142,12 @@ fn default_execution_timeout_secs() -> u64 {
 }
 fn default_update_check_days() -> u64 {
     1
+}
+fn default_server_port() -> u16 {
+    9851
+}
+fn default_server_idle_timeout_secs() -> u64 {
+    300
 }
 
 #[derive(Serialize, Deserialize)]
@@ -73,6 +166,10 @@ pub struct Config {
     pub execution_timeout_secs: u64,
     #[serde(default = "default_update_check_days")]
     pub update_check_days: u64,
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    #[serde(default = "default_server_idle_timeout_secs")]
+    pub server_idle_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -85,6 +182,8 @@ impl Default for Config {
             cookies_browser: default_cookies_browser(),
             execution_timeout_secs: default_execution_timeout_secs(),
             update_check_days: default_update_check_days(),
+            server_port: default_server_port(),
+            server_idle_timeout_secs: default_server_idle_timeout_secs(),
         }
     }
 }
@@ -148,6 +247,13 @@ fn filter_args(input: &[String], config: &Config) -> Vec<String> {
     while i < input.len() {
         let arg = &input[i];
 
+        // Pass through positional arguments (URLs, etc.)
+        if !arg.starts_with('-') {
+            result.push(arg.clone());
+            i += 1;
+            continue;
+        }
+
         if let Some(entry) = find_allowed(arg, &config.allowed_args) {
             if entry.ends_with('=') {
                 // Value-taking arg
@@ -171,8 +277,14 @@ fn filter_args(input: &[String], config: &Config) -> Vec<String> {
                 i += 1;
             }
         } else {
-            tracing::debug!(arg, "dropping disallowed arg");
-            i += 1;
+            // When dropping unknown flags, also skip the next arg if it looks like a value
+            if !arg.contains('=') && i + 1 < input.len() && !input[i + 1].starts_with('-') {
+                tracing::debug!(arg, value = &input[i + 1], "dropping disallowed arg with value");
+                i += 2;
+            } else {
+                tracing::debug!(arg, "dropping disallowed arg");
+                i += 1;
+            }
         }
     }
 
@@ -180,6 +292,11 @@ fn filter_args(input: &[String], config: &Config) -> Vec<String> {
 
     if config.cookies {
         result.push(format!("--cookies-from-browser={}", config.cookies_browser));
+    }
+
+    if let Some(js_runtime) = detect_js_runtime() {
+        result.push("--js-runtimes".into());
+        result.push(js_runtime);
     }
 
     result
@@ -194,6 +311,42 @@ fn find_allowed<'a>(arg: &str, allowed: &'a [String]) -> Option<&'a str> {
             }
         } else if arg == entry.as_str() {
             return Some(entry);
+        }
+    }
+    None
+}
+
+// --- JS Runtime Detection ---
+
+fn detect_js_runtime() -> Option<String> {
+    // yt-dlp preference order: deno, node, bun, quickjs
+    const CANDIDATES: &[(&str, &[&str])] = &[
+        ("deno", &["deno", "deno.exe"]),
+        ("node", &["node", "node.exe"]),
+        ("bun", &["bun", "bun.exe"]),
+        ("quickjs", &["qjs", "qjs.exe"]),
+    ];
+
+    for (name, binaries) in CANDIDATES {
+        for bin in *binaries {
+            if let Some(path) = which(bin) {
+                let runtime = format!("{}:{}", name, path.display());
+                tracing::info!(runtime = %runtime, "detected JS runtime for yt-dlp");
+                return Some(runtime);
+            }
+        }
+    }
+
+    tracing::warn!("no JS runtime found — yt-dlp may fail to solve YouTube challenges");
+    None
+}
+
+fn which(binary: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     None
