@@ -54,11 +54,10 @@ pub async fn run_managed_server(
     };
 
     // 2. Monitor bgutil-pot in background (restart on crash)
-    if let Some(ref mut pot) = bgutil {
+    if let (Some(ref mut pot), Some(ref path)) = (&mut bgutil, &bgutil_pot_path) {
         let token = shutdown.clone();
-        let path = bgutil_pot_path.clone().unwrap();
         let child_id = pot.take_child();
-        tokio::spawn(monitor_bgutil_pot(child_id, path, bgutil_pot_port, token));
+        tokio::spawn(monitor_bgutil_pot(child_id, path.clone(), bgutil_pot_port, token));
     }
 
     // 3. Signal handler: SIGTERM/SIGINT → cancel token

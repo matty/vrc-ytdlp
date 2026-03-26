@@ -77,12 +77,7 @@ impl AppState {
     }
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
+use crate::util::now_secs;
 
 // --- Routes ---
 
@@ -170,8 +165,6 @@ async fn stream_video(
                 tracing::warn!(id = %id, "waited download failed, starting own pipeline");
             }
         }
-        // Re-register ourselves as inflight for this URL
-        let _ = state.cache.start_download(&video_url).await;
     }
 
     // --- Cache miss: run the pipeline ---
@@ -318,44 +311,27 @@ pub fn spawn_server_process(port: u16, idle_timeout_secs: u64) -> Result<()> {
 
     tracing::debug!(exe = %exe.display(), port, idle_timeout_secs, "spawning detached server process");
 
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args([
+        "--serve",
+        "--port",
+        &port.to_string(),
+        "--idle-timeout",
+        &idle_timeout_secs.to_string(),
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
         const DETACHED_PROCESS: u32 = 0x00000008;
-
-        std::process::Command::new(exe)
-            .args([
-                "--serve",
-                "--port",
-                &port.to_string(),
-                "--idle-timeout",
-                &idle_timeout_secs.to_string(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
-            .spawn()
-            .context("spawning server process")?;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
     }
 
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new(exe)
-            .args([
-                "--serve",
-                "--port",
-                &port.to_string(),
-                "--idle-timeout",
-                &idle_timeout_secs.to_string(),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("spawning server process")?;
-    }
+    cmd.spawn().context("spawning server process")?;
 
     tracing::debug!("server process spawned");
     Ok(())

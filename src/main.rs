@@ -4,6 +4,7 @@ mod executor;
 mod lifecycle;
 mod pipeline;
 mod server;
+mod util;
 
 use std::env;
 use std::fs;

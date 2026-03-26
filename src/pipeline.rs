@@ -547,9 +547,9 @@ fn log_ytdlp_stderr(stream_id: &str, stderr_text: &str) {
         if line.is_empty() {
             continue;
         }
-        if line.contains("ERROR") {
+        if line.contains("ERROR") || line.contains("error") {
             tracing::error!(id = %stream_id, process = "yt-dlp", "{}", line);
-        } else if line.contains("WARNING") {
+        } else if line.contains("WARNING") || line.contains("warning") {
             tracing::warn!(id = %stream_id, process = "yt-dlp", "{}", line);
         } else {
             tracing::debug!(id = %stream_id, process = "yt-dlp", "{}", line);
@@ -563,7 +563,8 @@ fn augmented_path(tool_dir: &Path) -> String {
     if current_path.is_empty() {
         tool_dir_str.to_string()
     } else {
-        format!("{tool_dir_str}:{current_path}")
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        format!("{tool_dir_str}{sep}{current_path}")
     }
 }
 

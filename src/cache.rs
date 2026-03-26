@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,6 +10,8 @@ use axum::http::{Response, StatusCode};
 use tokio::sync::{broadcast, Mutex};
 use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
+
+use crate::util::now_secs;
 
 // ---------------------------------------------------------------------------
 // Cache entry
@@ -99,7 +100,7 @@ impl VideoCache {
         }
 
         // No inflight — register ourselves
-        let (tx, _) = broadcast::channel(1);
+        let (tx, _) = broadcast::channel(16);
         inflight.insert(key, tx);
         None
     }
@@ -184,50 +185,52 @@ impl VideoCache {
 
     /// Evict expired entries (TTL) then over-limit entries (LRU).
     pub async fn evict(&self) {
-        let mut index = self.index.lock().await;
-        let now = now_secs();
+        // Collect paths to delete under lock, then release lock before doing I/O
+        let to_delete: Vec<PathBuf>;
+        {
+            let mut index = self.index.lock().await;
+            let now = now_secs();
+            let mut remove_keys = Vec::new();
 
-        // Phase 1: TTL expiry
-        let expired: Vec<String> = index
-            .iter()
-            .filter(|(_, e)| now.saturating_sub(e.created_at) > self.ttl_secs)
-            .map(|(k, _)| k.clone())
-            .collect();
-
-        for key in &expired {
-            if let Some(entry) = index.remove(key) {
-                let _ = std::fs::remove_file(&entry.path);
-                let _ = std::fs::remove_file(meta_path(&entry.path));
-                tracing::debug!(url = %entry.url, "evicted expired cache entry");
+            // Phase 1: TTL expiry
+            for (key, entry) in index.iter() {
+                if now.saturating_sub(entry.created_at) > self.ttl_secs {
+                    remove_keys.push(key.clone());
+                }
             }
-        }
 
-        // Phase 2: LRU if over size limit
-        let mut total: u64 = index.values().map(|e| e.size).sum();
+            // Phase 2: LRU if over size limit
+            let mut total: u64 = index.values().map(|e| e.size).sum();
+            if total > self.max_size_bytes {
+                let mut by_access: Vec<(String, u64, u64)> = index
+                    .iter()
+                    .filter(|(k, _)| !remove_keys.contains(k))
+                    .map(|(k, e)| (k.clone(), e.last_accessed, e.size))
+                    .collect();
+                by_access.sort_by_key(|(_, ts, _)| *ts);
 
-        if total > self.max_size_bytes {
-            let mut entries: Vec<(String, u64)> = index
+                for (key, _, size) in by_access {
+                    if total <= self.max_size_bytes {
+                        break;
+                    }
+                    total -= size;
+                    remove_keys.push(key);
+                }
+            }
+
+            // Remove from index and collect paths
+            to_delete = remove_keys
                 .iter()
-                .map(|(k, e)| (k.clone(), e.last_accessed))
+                .filter_map(|key| index.remove(key))
+                .flat_map(|entry| {
+                    tracing::debug!(url = %entry.url, "evicting cache entry");
+                    [entry.path.clone(), meta_path(&entry.path)]
+                })
                 .collect();
-            entries.sort_by_key(|(_, ts)| *ts); // oldest first
-
-            for (key, _) in entries {
-                if total <= self.max_size_bytes {
-                    break;
-                }
-                if let Some(entry) = index.remove(&key) {
-                    total -= entry.size;
-                    let _ = std::fs::remove_file(&entry.path);
-                    let _ = std::fs::remove_file(meta_path(&entry.path));
-                    tracing::info!(url = %entry.url, size = entry.size, "evicted LRU cache entry");
-                }
-            }
         }
-
-        if !expired.is_empty() || total > self.max_size_bytes {
-            let count = index.len();
-            tracing::debug!(entries = count, total_bytes = total, "cache eviction complete");
+        // Lock released — do blocking I/O outside the lock
+        for path in &to_delete {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -321,13 +324,31 @@ pub fn tee_stream(
     }
 }
 
-/// Stream that tees ffmpeg output to a cache file while yielding to HTTP response.
-pub struct TeeStream {
-    inner: ReaderStream<tokio::process::ChildStdout>,
-    writer: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>>,
-    cache: Arc<VideoCache>,
-    video_url: String,
-    completed: std::sync::atomic::AtomicBool,
+pin_project_lite::pin_project! {
+    /// Stream that tees ffmpeg output to a cache file while yielding to HTTP response.
+    pub struct TeeStream {
+        #[pin]
+        inner: ReaderStream<tokio::process::ChildStdout>,
+        writer: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+        cache: Arc<VideoCache>,
+        video_url: String,
+        completed: std::sync::atomic::AtomicBool,
+    }
+
+    impl PinnedDrop for TeeStream {
+        fn drop(this: Pin<&mut Self>) {
+            let this = this.project();
+            if !this.completed.load(std::sync::atomic::Ordering::Relaxed) {
+                let cache = this.cache.clone();
+                let url = this.video_url.clone();
+                tokio::spawn(async move {
+                    cache
+                        .fail_download(&url, "stream dropped before completion")
+                        .await;
+                });
+            }
+        }
+    }
 }
 
 impl futures_core::Stream for TeeStream {
@@ -337,16 +358,13 @@ impl futures_core::Stream for TeeStream {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let this = unsafe { self.get_unchecked_mut() };
-        let inner = unsafe { std::pin::Pin::new_unchecked(&mut this.inner) };
+        let this = self.project();
 
-        match inner.poll_next(cx) {
+        match this.inner.poll_next(cx) {
             std::task::Poll::Ready(Some(Ok(bytes))) => {
-                // Write to cache file (best-effort, never block on error)
                 if let Ok(mut guard) = this.writer.lock() {
                     if let Some(ref mut w) = *guard {
                         if w.write_all(&bytes).is_err() {
-                            // Stop writing on error, but keep streaming
                             let _ = guard.take();
                         }
                     }
@@ -355,7 +373,6 @@ impl futures_core::Stream for TeeStream {
             }
             std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
             std::task::Poll::Ready(None) => {
-                // Stream complete — flush writer and finalize cache
                 if let Ok(mut guard) = this.writer.lock() {
                     if let Some(mut w) = guard.take() {
                         let _ = w.flush();
@@ -364,7 +381,6 @@ impl futures_core::Stream for TeeStream {
                 this.completed
                     .store(true, std::sync::atomic::Ordering::Relaxed);
 
-                // Finalize cache entry in a background task
                 let cache = this.cache.clone();
                 let url = this.video_url.clone();
                 tokio::spawn(async move {
@@ -381,20 +397,6 @@ impl futures_core::Stream for TeeStream {
     }
 }
 
-impl Drop for TeeStream {
-    fn drop(&mut self) {
-        if !self.completed.load(std::sync::atomic::Ordering::Relaxed) {
-            // Stream dropped before completion — clean up
-            let cache = self.cache.clone();
-            let url = self.video_url.clone();
-            tokio::spawn(async move {
-                cache
-                    .fail_download(&url, "stream dropped before completion")
-                    .await;
-            });
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Serve from cache
@@ -447,19 +449,16 @@ pub fn spawn_eviction_task(cache: Arc<VideoCache>, shutdown: CancellationToken) 
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Stable FNV-1a hash — deterministic across Rust versions and restarts.
 fn cache_key(video_url: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    video_url.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in video_url.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{:016x}", hash)
 }
 
 fn meta_path(mp4_path: &Path) -> PathBuf {
     mp4_path.with_extension("meta")
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
