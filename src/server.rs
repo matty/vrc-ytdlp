@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -11,37 +12,60 @@ use axum::http::{Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
-use tokio::process::Command;
-use tokio::sync::Mutex;
 use tokio_util::io::ReaderStream;
+use tokio_util::sync::CancellationToken;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::cache::{self, VideoCache};
+use crate::pipeline::{self, PipelineConfig};
 
 // --- State ---
 
 struct StreamEntry {
     /// Original video URL (e.g. YouTube URL)
     video_url: String,
-    /// Path to yt-dlp executable
-    ytdlp_path: String,
-    /// Args to pass to yt-dlp (format, cookies, etc.) — no --get-url, no URL
+    /// yt-dlp args (format, cookies, etc.) — no --get-url, no video URL
     ytdlp_args: Vec<String>,
 }
 
+pub struct ServerConfig {
+    pub ytdlp_path: PathBuf,
+    pub ffmpeg_path: PathBuf,
+    pub plugin_dirs: Option<PathBuf>,
+    pub extractor_args: Vec<String>,
+    pub cache_dir: PathBuf,
+    pub cache_max_size_mb: u64,
+    pub cache_ttl_secs: u64,
+}
+
 struct AppState {
-    streams: Mutex<HashMap<String, StreamEntry>>,
+    streams: tokio::sync::Mutex<HashMap<String, StreamEntry>>,
     next_id: AtomicU64,
     last_activity: AtomicU64,
+    active_pipelines: AtomicU64,
+    server_config: ServerConfig,
+    cache: Arc<VideoCache>,
 }
 
 impl AppState {
-    fn new() -> Self {
-        Self {
-            streams: Mutex::new(HashMap::new()),
+    async fn new(config: ServerConfig) -> Result<Self> {
+        let cache = VideoCache::new(
+            config.cache_dir.clone(),
+            config.cache_max_size_mb,
+            config.cache_ttl_secs,
+        )
+        .await?;
+
+        Ok(Self {
+            streams: tokio::sync::Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             last_activity: AtomicU64::new(now_secs()),
-        }
+            active_pipelines: AtomicU64::new(0),
+            server_config: config,
+            cache: Arc::new(cache),
+        })
     }
 
     fn touch(&self) {
@@ -65,7 +89,9 @@ fn now_secs() -> u64 {
 #[derive(Deserialize)]
 struct RegisterRequest {
     video_url: String,
-    ytdlp_path: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    ytdlp_path: String, // kept for backwards compat, ignored in favor of server config
     ytdlp_args: Vec<String>,
 }
 
@@ -89,13 +115,11 @@ async fn register_stream(
         .to_string();
 
     tracing::info!(id = %id, video_url = %req.video_url, "registered stream");
-    tracing::debug!(id = %id, ytdlp_path = %req.ytdlp_path, ytdlp_args = ?req.ytdlp_args, "stream details");
 
     state.streams.lock().await.insert(
         id.clone(),
         StreamEntry {
             video_url: req.video_url,
-            ytdlp_path: req.ytdlp_path,
             ytdlp_args: req.ytdlp_args,
         },
     );
@@ -111,162 +135,104 @@ async fn stream_video(
 
     let entry = {
         let streams = state.streams.lock().await;
-        streams.get(&id).map(|e| (e.video_url.clone(), e.ytdlp_path.clone(), e.ytdlp_args.clone()))
+        streams
+            .get(&id)
+            .map(|e| (e.video_url.clone(), e.ytdlp_args.clone()))
     };
 
-    let (video_url, ytdlp_path, ytdlp_args) = match entry {
+    let (video_url, ytdlp_args) = match entry {
         Some(e) => e,
         None => {
             tracing::warn!(id = %id, "stream not found");
-            return Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("stream not found"))
-                .unwrap();
+            return error_response(StatusCode::NOT_FOUND, "stream not found");
         }
     };
 
-    tracing::info!(id = %id, video_url = %video_url, "starting yt-dlp → ffmpeg pipeline");
-
-    // Build yt-dlp args: download to stdout, piped to ffmpeg
-    // - Strip --get-url (we're downloading, not resolving)
-    // - Strip URLs (we add the video_url ourselves)
-    // - Replace -f with best quality (yt-dlp merges video+audio internally)
-    // - Add --logtostderr so logs don't corrupt video data on stdout
-    // - Add -o - to output video to stdout
-    let mut ytdlp_full_args: Vec<String> = Vec::new();
-    let mut skip_next = false;
-    for arg in &ytdlp_args {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if arg == "--get-url" {
-            continue;
-        }
-        if arg == "-f" {
-            skip_next = true; // skip the original format value, we'll add our own
-            continue;
-        }
-        // Strip any URLs (we add video_url at the end)
-        if arg.starts_with("http://") || arg.starts_with("https://") {
-            continue;
-        }
-        ytdlp_full_args.push(arg.clone());
+    // --- Check cache ---
+    if let Some(cached_path) = state.cache.get(&video_url).await {
+        tracing::info!(id = %id, video_url = %video_url, "serving from cache");
+        state.streams.lock().await.remove(&id);
+        return cache::serve_cached_file(&cached_path).await;
     }
-    ytdlp_full_args.push("-f".to_string());
-    ytdlp_full_args.push("bv*[height<=1080]+ba/b[height<=1080]/b".to_string());
-    ytdlp_full_args.push("--logtostderr".to_string());
-    ytdlp_full_args.push("-o".to_string());
-    ytdlp_full_args.push("-".to_string());
-    ytdlp_full_args.push(video_url.clone());
 
-    tracing::debug!(id = %id, ytdlp_args = ?ytdlp_full_args, "spawning yt-dlp");
-
-    // Set up tmp dir next to yt-dlp
-    let ytdlp_dir = std::path::Path::new(&ytdlp_path)
-        .parent()
-        .unwrap_or(std::path::Path::new("."));
-    let tmp_dir = ytdlp_dir.join("tmp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
-
-    // Spawn yt-dlp (std::process) — downloads video to stdout
-    let mut ytdlp_child = match std::process::Command::new(&ytdlp_path)
-        .args(&ytdlp_full_args)
-        .current_dir(ytdlp_dir)
-        .env("TEMP", &tmp_dir)
-        .env("TMP", &tmp_dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => {
-            tracing::debug!(id = %id, "yt-dlp process spawned");
-            c
+    // --- Check if another request is already downloading this URL ---
+    if let Some(mut waiter) = state.cache.start_download(&video_url).await {
+        tracing::info!(id = %id, "waiting for in-progress download of same URL");
+        match waiter.recv().await {
+            Ok(Ok(())) => {
+                if let Some(cached_path) = state.cache.get(&video_url).await {
+                    tracing::info!(id = %id, "serving from cache after wait");
+                    state.streams.lock().await.remove(&id);
+                    return cache::serve_cached_file(&cached_path).await;
+                }
+            }
+            _ => {
+                tracing::warn!(id = %id, "waited download failed, starting own pipeline");
+            }
         }
+        // Re-register ourselves as inflight for this URL
+        let _ = state.cache.start_download(&video_url).await;
+    }
+
+    // --- Cache miss: run the pipeline ---
+    tracing::info!(id = %id, video_url = %video_url, "cache miss, starting pipeline");
+
+    let pipeline_config = PipelineConfig {
+        ytdlp_path: state.server_config.ytdlp_path.clone(),
+        ffmpeg_path: state.server_config.ffmpeg_path.clone(),
+        ytdlp_args,
+        plugin_dirs: state.server_config.plugin_dirs.clone(),
+        extractor_args: state.server_config.extractor_args.clone(),
+    };
+
+    state.active_pipelines.fetch_add(1, Ordering::Relaxed);
+
+    let handle = match pipeline::start_pipeline(&pipeline_config, &video_url, &id).await {
+        Ok(h) => h,
         Err(e) => {
-            tracing::error!(id = %id, error = %e, "failed to spawn yt-dlp");
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from(format!("failed to spawn yt-dlp: {e}")))
-                .unwrap();
+            state.active_pipelines.fetch_sub(1, Ordering::Relaxed);
+            state.cache.fail_download(&video_url, &e.to_string()).await;
+            tracing::error!(id = %id, error = %e, "pipeline failed");
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("pipeline failed: {e}"),
+            );
         }
     };
 
-    let ytdlp_stdout = ytdlp_child.stdout.take().unwrap();
+    let ffmpeg_stdout = handle.into_monitored(id.clone());
 
-    // Spawn ffmpeg (tokio) — reads from yt-dlp stdout via OS pipe, remuxes to fragmented mp4
-    tracing::debug!(id = %id, "spawning ffmpeg");
-
-    let mut ffmpeg_child = match Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "warning",
-            "-i",
-            "pipe:0",
-            "-c",
-            "copy",
-            "-movflags",
-            "frag_mp4+empty_moov+default_base_moof",
-            "-f",
-            "mp4",
-            "pipe:1",
-        ])
-        .stdin(ytdlp_stdout)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => {
-            tracing::debug!(id = %id, "ffmpeg process spawned");
-            c
-        }
-        Err(e) => {
-            tracing::error!(id = %id, error = %e, "failed to spawn ffmpeg");
-            let _ = ytdlp_child.kill();
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from(format!("failed to spawn ffmpeg: {e}")))
-                .unwrap();
-        }
-    };
-
-    let ffmpeg_stdout = match ffmpeg_child.stdout.take() {
-        Some(s) => s,
-        None => {
-            tracing::error!(id = %id, "no stdout from ffmpeg");
-            let _ = ytdlp_child.kill();
-            return Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::from("no stdout from ffmpeg"))
-                .unwrap();
-        }
-    };
-
-    // Background task: wait for both processes to finish, clean up
+    // Decrement active count and clean up stream entry
     let state_clone = state.clone();
     let id_clone = id.clone();
     tokio::spawn(async move {
-        // Wait for ffmpeg (which waits for yt-dlp via pipe EOF)
-        let ffmpeg_status = ffmpeg_child.wait().await;
-        match &ffmpeg_status {
-            Ok(s) => tracing::info!(id = %id_clone, status = %s, "ffmpeg finished"),
-            Err(e) => tracing::error!(id = %id_clone, error = %e, "ffmpeg wait failed"),
-        }
-
-        // yt-dlp should already be done, but reap it
-        let _ = ytdlp_child.wait();
-
-        state_clone.touch();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        state_clone.active_pipelines.fetch_sub(1, Ordering::Relaxed);
         state_clone.streams.lock().await.remove(&id_clone);
+        state_clone.touch();
         tracing::debug!(id = %id_clone, "stream cleaned up");
     });
 
-    let stream = ReaderStream::new(ffmpeg_stdout);
-    let body = Body::from_stream(stream);
+    // Tee ffmpeg output to cache file while streaming to client
+    let cache_tmp = state.cache.tmp_path(&video_url);
+    let body = match std::fs::File::create(&cache_tmp) {
+        Ok(file) => {
+            let stream = cache::tee_stream(
+                ffmpeg_stdout,
+                file,
+                state.cache.clone(),
+                video_url,
+            );
+            Body::from_stream(stream)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "couldn't create cache file, streaming without caching");
+            state.cache.fail_download(&video_url, "cache file creation failed").await;
+            Body::from_stream(ReaderStream::new(ffmpeg_stdout))
+        }
+    };
 
-    tracing::debug!(id = %id, "streaming response started");
+    tracing::info!(id = %id, "streaming response started");
 
     Response::builder()
         .header("content-type", "video/mp4")
@@ -275,10 +241,29 @@ async fn stream_video(
         .unwrap()
 }
 
+fn error_response(status: StatusCode, msg: &str) -> Response<Body> {
+    Response::builder()
+        .status(status)
+        .body(Body::from(msg.to_string()))
+        .unwrap()
+}
+
 // --- Server Entry Point ---
 
-pub async fn run_server(port: u16, idle_timeout_secs: u64) -> Result<()> {
-    let state = Arc::new(AppState::new());
+pub async fn run_server(
+    port: u16,
+    idle_timeout_secs: u64,
+    server_config: ServerConfig,
+    shutdown: CancellationToken,
+) -> Result<()> {
+    let state = Arc::new(
+        AppState::new(server_config)
+            .await
+            .context("initializing server state")?,
+    );
+
+    // Start background cache eviction
+    cache::spawn_eviction_task(state.cache.clone(), shutdown.clone());
 
     let app = Router::new()
         .route("/health", get(health))
@@ -293,21 +278,27 @@ pub async fn run_server(port: u16, idle_timeout_secs: u64) -> Result<()> {
 
     tracing::info!(addr = %addr, "media server started");
 
-    // Idle timeout watcher — only shuts down when idle AND no active streams
+    // Idle timeout watcher — cancels the shutdown token instead of exit(0)
     let state_for_timeout = state.clone();
+    let idle_shutdown = shutdown.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
+            if idle_shutdown.is_cancelled() {
+                return;
+            }
             let idle = state_for_timeout.idle_secs();
-            let active = state_for_timeout.streams.lock().await.len();
+            let active = state_for_timeout.active_pipelines.load(Ordering::Relaxed);
             if idle >= idle_timeout_secs && active == 0 {
                 tracing::info!(idle_secs = idle, "server idle timeout reached, shutting down");
-                std::process::exit(0);
+                idle_shutdown.cancel();
+                return;
             }
         }
     });
 
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown.cancelled_owned())
         .await
         .context("running media server")
 }

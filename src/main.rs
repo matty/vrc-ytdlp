@@ -1,5 +1,8 @@
+mod cache;
 mod downloader;
 mod executor;
+mod lifecycle;
+mod pipeline;
 mod server;
 
 use std::env;
@@ -28,7 +31,62 @@ async fn main() -> Result<()> {
 
         let app_dir = exe_dir()?;
         let _guard = setup_logging(&app_dir);
-        return server::run_server(port, idle_timeout).await;
+        let config = load_config(&app_dir.join("config.json"))?;
+        let ytdlp_path = resolve_ytdlp_path(&config, &app_dir)?;
+        let ffmpeg_path = resolve_ffmpeg_path(&config, &app_dir)?;
+
+        tracing::info!(
+            ytdlp = %ytdlp_path.display(),
+            ffmpeg = %ffmpeg_path.display(),
+            "server tool paths resolved"
+        );
+
+        let plugin_dirs = config.plugin_dirs.as_ref().map(|p| {
+            if Path::new(p).is_absolute() {
+                PathBuf::from(p)
+            } else {
+                app_dir.join(p)
+            }
+        });
+
+        // Auto-detect bgutil-pot binary next to the executable
+        let bgutil_pot_path = {
+            let name = if cfg!(windows) {
+                "bgutil-pot.exe"
+            } else {
+                "bgutil-pot"
+            };
+            let candidate = app_dir.join(name);
+            if candidate.exists() {
+                Some(candidate)
+            } else {
+                None
+            }
+        };
+
+        let cache_dir = if Path::new(&config.cache_dir).is_absolute() {
+            PathBuf::from(&config.cache_dir)
+        } else {
+            app_dir.join(&config.cache_dir)
+        };
+
+        let server_config = server::ServerConfig {
+            ytdlp_path,
+            ffmpeg_path,
+            plugin_dirs,
+            extractor_args: config.extractor_args.clone(),
+            cache_dir,
+            cache_max_size_mb: config.cache_max_size_mb,
+            cache_ttl_secs: config.cache_ttl_secs,
+        };
+        return lifecycle::run_managed_server(
+            port,
+            idle_timeout,
+            server_config,
+            bgutil_pot_path,
+            config.bgutil_pot_port,
+        )
+        .await;
     }
 
     let app_dir = exe_dir()?;
@@ -120,7 +178,18 @@ fn parse_flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 // --- Config ---
 
 fn default_ytdlp_location() -> String {
-    "tools/yt-dlp.exe".into()
+    if cfg!(windows) {
+        "tools/yt-dlp.exe".into()
+    } else {
+        "./yt-dlp".into()
+    }
+}
+fn default_ffmpeg_location() -> String {
+    if cfg!(windows) {
+        "tools/ffmpeg.exe".into()
+    } else {
+        "./ffmpeg".into()
+    }
 }
 fn default_allowed_args() -> Vec<String> {
     vec!["--get-url".into()]
@@ -131,7 +200,8 @@ fn default_custom_args() -> Vec<String> {
         "--no-warnings".into(),
         "--no-cache-dir".into(),
         "-f".into(),
-        "best[height<=1080]/bestvideo[height<=1080]+bestaudio/best".into(),
+        "bv[vcodec^=avc][height<=1080]+ba[acodec^=mp4a]/bv[height<=1080]+ba/b[height<=1080]/b"
+            .into(),
     ]
 }
 fn default_cookies_browser() -> String {
@@ -149,11 +219,25 @@ fn default_server_port() -> u16 {
 fn default_server_idle_timeout_secs() -> u64 {
     300
 }
+fn default_bgutil_pot_port() -> u16 {
+    4416
+}
+fn default_cache_dir() -> String {
+    "./cache".into()
+}
+fn default_cache_max_size_mb() -> u64 {
+    2048
+}
+fn default_cache_ttl_secs() -> u64 {
+    86400
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_ytdlp_location")]
     pub ytdlp_location: String,
+    #[serde(default = "default_ffmpeg_location")]
+    pub ffmpeg_location: String,
     #[serde(default = "default_allowed_args")]
     pub allowed_args: Vec<String>,
     #[serde(default = "default_custom_args")]
@@ -170,12 +254,31 @@ pub struct Config {
     pub server_port: u16,
     #[serde(default = "default_server_idle_timeout_secs")]
     pub server_idle_timeout_secs: u64,
+    /// Directory containing yt-dlp plugins (e.g., PO token provider)
+    #[serde(default)]
+    pub plugin_dirs: Option<String>,
+    /// Extra yt-dlp extractor args (e.g., ["youtube:player-client=mweb"])
+    #[serde(default)]
+    pub extractor_args: Vec<String>,
+    /// Port for the bgutil-pot PO token server
+    #[serde(default = "default_bgutil_pot_port")]
+    pub bgutil_pot_port: u16,
+    /// Directory for cached videos
+    #[serde(default = "default_cache_dir")]
+    pub cache_dir: String,
+    /// Maximum cache size in MB
+    #[serde(default = "default_cache_max_size_mb")]
+    pub cache_max_size_mb: u64,
+    /// Cache entry time-to-live in seconds
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             ytdlp_location: default_ytdlp_location(),
+            ffmpeg_location: default_ffmpeg_location(),
             allowed_args: default_allowed_args(),
             custom_args: default_custom_args(),
             cookies: false,
@@ -184,6 +287,12 @@ impl Default for Config {
             update_check_days: default_update_check_days(),
             server_port: default_server_port(),
             server_idle_timeout_secs: default_server_idle_timeout_secs(),
+            plugin_dirs: None,
+            extractor_args: Vec::new(),
+            bgutil_pot_port: default_bgutil_pot_port(),
+            cache_dir: default_cache_dir(),
+            cache_max_size_mb: default_cache_max_size_mb(),
+            cache_ttl_secs: default_cache_ttl_secs(),
         }
     }
 }
@@ -291,7 +400,15 @@ fn filter_args(input: &[String], config: &Config) -> Vec<String> {
     result.extend(config.custom_args.iter().cloned());
 
     if config.cookies {
-        result.push(format!("--cookies-from-browser={}", config.cookies_browser));
+        // Check for a cookies.txt file first (works on headless servers)
+        let app_dir = exe_dir().unwrap_or_default();
+        let cookie_file = app_dir.join("cookies.txt");
+        if cookie_file.exists() {
+            result.push("--cookies".into());
+            result.push(cookie_file.to_string_lossy().to_string());
+        } else {
+            result.push(format!("--cookies-from-browser={}", config.cookies_browser));
+        }
     }
 
     if let Some(js_runtime) = detect_js_runtime() {
@@ -424,6 +541,25 @@ fn resolve_ytdlp_path(config: &Config, app_dir: &Path) -> Result<PathBuf> {
                 );
             }
         }
+    }
+
+    Ok(resolved)
+}
+
+fn resolve_ffmpeg_path(config: &Config, app_dir: &Path) -> Result<PathBuf> {
+    let loc = &config.ffmpeg_location;
+
+    let resolved = if Path::new(loc).is_absolute() {
+        PathBuf::from(loc)
+    } else {
+        app_dir.join(loc.replace('/', std::path::MAIN_SEPARATOR_STR))
+    };
+
+    if !resolved.exists() {
+        bail!(
+            "ffmpeg not found at '{}'. Place ffmpeg next to the executable or set ffmpeg_location in config.json.",
+            resolved.display()
+        );
     }
 
     Ok(resolved)

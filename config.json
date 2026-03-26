@@ -1,5 +1,6 @@
 {
-  "ytdlp_location": "tools/yt-dlp.exe",
+  "ytdlp_location": "./yt-dlp",
+  "ffmpeg_location": "./ffmpeg",
   "allowed_args": [
     "--get-url"
   ],
@@ -8,10 +9,12 @@
     "--no-warnings",
     "--no-cache-dir",
     "-f",
-    "best[height<=1080][protocol^=m3u8]/best[height<=1080][protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=http][vcodec!=none][acodec!=none]/best[protocol^=m3u8]/best"
+    "bv[vcodec^=avc][height<=1080]+ba[acodec^=mp4a]/bv[height<=1080]+ba/b[height<=1080]/b"
   ],
   "cookies": true,
   "cookies_browser": "firefox",
   "execution_timeout_secs": 120,
-  "update_check_days": 1
+  "update_check_days": 1,
+  "plugin_dirs": "./yt-dlp-plugins",
+  "extractor_args": []
 }
