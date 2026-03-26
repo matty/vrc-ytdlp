@@ -111,17 +111,14 @@ async fn spawn_pipe_pipeline(
     let ytdlp_args = build_pipe_args(config, video_url);
     tracing::debug!(id = %stream_id, args = ?ytdlp_args, "spawning yt-dlp pipe");
 
-    let mut ytdlp_child = Command::new(&config.ytdlp_path)
-        .args(&ytdlp_args)
-        .current_dir(work_dir)
-        .env("TEMP", &tmp_dir)
-        .env("TMP", &tmp_dir)
-        .env("PATH", &path_env)
+    let mut cmd = Command::new(&config.ytdlp_path);
+    cmd.args(&ytdlp_args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("spawning yt-dlp (pipe mode)")?;
+        .stderr(Stdio::piped());
+    apply_ytdlp_env(&mut cmd, work_dir, &path_env);
+
+    let mut ytdlp_child = cmd.spawn().context("spawning yt-dlp (pipe mode)")?;
 
     if let Some(stderr) = ytdlp_child.stderr.take() {
         let id = stream_id.to_string();
@@ -187,18 +184,14 @@ async fn spawn_tempfile_pipeline(
 
         let _ = std::fs::remove_file(&temp_file);
 
-        let output = Command::new(&config.ytdlp_path)
-            .args(&ytdlp_args)
-            .current_dir(work_dir)
-            .env("TEMP", &tmp_dir)
-            .env("TMP", &tmp_dir)
-            .env("PATH", &path_env)
+        let mut cmd = Command::new(&config.ytdlp_path);
+        cmd.args(&ytdlp_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await
-            .context("running yt-dlp download")?;
+            .stderr(Stdio::piped());
+        apply_ytdlp_env(&mut cmd, work_dir, &path_env);
+
+        let output = cmd.output().await.context("running yt-dlp download")?;
 
         let stderr_text = String::from_utf8_lossy(&output.stderr);
         log_ytdlp_stderr(stream_id, &stderr_text);
@@ -294,6 +287,9 @@ fn spawn_ffmpeg_pipe(
     cmd.args(["-f", "mp4", "pipe:1"]);
     cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    #[cfg(windows)]
+    apply_no_window(&mut cmd);
+
     let mut child = cmd.spawn().context("spawning ffmpeg (pipe mode)")?;
     if let Some(stderr) = child.stderr.take() {
         let id = stream_id.to_string();
@@ -337,6 +333,9 @@ fn spawn_ffmpeg_file(
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    apply_no_window(&mut cmd);
 
     let mut child = cmd.spawn().context("spawning ffmpeg (file mode)")?;
     if let Some(stderr) = child.stderr.take() {
@@ -490,8 +489,8 @@ async fn probe_codecs(ffmpeg_path: &Path, file: &Path) -> (bool, bool) {
         "ffprobe"
     });
 
-    let output = Command::new(&ffprobe_path)
-        .args([
+    let mut cmd = Command::new(&ffprobe_path);
+    cmd.args([
             "-v",
             "quiet",
             "-show_entries",
@@ -501,9 +500,12 @@ async fn probe_codecs(ffmpeg_path: &Path, file: &Path) -> (bool, bool) {
         ])
         .arg(file)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await;
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    apply_no_window(&mut cmd);
+
+    let output = cmd.output().await;
 
     let output = match output {
         Ok(o) if o.status.success() => o,
@@ -566,6 +568,36 @@ fn augmented_path(tool_dir: &Path) -> String {
         let sep = if cfg!(windows) { ";" } else { ":" };
         format!("{tool_dir_str}{sep}{current_path}")
     }
+}
+
+/// Apply common environment setup for spawning yt-dlp.
+/// Clears PyInstaller variables that can cause crashes when yt-dlp.exe
+/// (a PyInstaller bundle) is spawned as a child process.
+fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &str) {
+    let tmp_dir = work_dir.join("tmp");
+    cmd.current_dir(work_dir)
+        .env("TEMP", &tmp_dir)
+        .env("TMP", &tmp_dir)
+        .env("PATH", path_env)
+        .env_remove("_MEIPASS2")
+        .env_remove("_PYI_ARCHIVE_FILE")
+        .env_remove("_PYI_SPLASH_IPC");
+
+    // On Windows, prevent console windows from appearing for child processes
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
+/// Apply CREATE_NO_WINDOW on Windows for ffmpeg/ffprobe processes.
+#[cfg(windows)]
+fn apply_no_window(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
 async fn log_stderr(

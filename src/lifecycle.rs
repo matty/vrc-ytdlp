@@ -127,6 +127,14 @@ async fn spawn_bgutil_pot(path: &Path, host: &str, port: u16) -> Result<Child> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    // On Windows, prevent a console window from appearing
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
     let mut child = cmd.spawn().context("spawning bgutil-pot")?;
 
     // Forward stderr to tracing

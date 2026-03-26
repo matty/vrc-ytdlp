@@ -550,18 +550,26 @@ fn resolve_ytdlp_path(config: &Config, app_dir: &Path) -> Result<PathBuf> {
 fn resolve_ffmpeg_path(config: &Config, app_dir: &Path) -> Result<PathBuf> {
     let loc = &config.ffmpeg_location;
 
-    let resolved = if Path::new(loc).is_absolute() {
-        PathBuf::from(loc)
-    } else {
-        app_dir.join(loc.replace('/', std::path::MAIN_SEPARATOR_STR))
-    };
+    // If explicitly set and non-empty, resolve it
+    if !loc.is_empty() {
+        let resolved = if Path::new(loc).is_absolute() {
+            PathBuf::from(loc)
+        } else {
+            app_dir.join(loc.replace('/', std::path::MAIN_SEPARATOR_STR))
+        };
 
-    if !resolved.exists() {
-        bail!(
-            "ffmpeg not found at '{}'. Place ffmpeg next to the executable or set ffmpeg_location in config.json.",
-            resolved.display()
-        );
+        if resolved.exists() {
+            return Ok(resolved);
+        }
     }
 
-    Ok(resolved)
+    // Fall back to PATH
+    let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    if let Some(path) = which(name) {
+        return Ok(path);
+    }
+
+    bail!(
+        "ffmpeg not found. Place it next to the executable, set ffmpeg_location in config.json, or install it on PATH."
+    );
 }
