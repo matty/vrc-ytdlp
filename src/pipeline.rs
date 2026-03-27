@@ -574,14 +574,18 @@ fn augmented_path(tool_dir: &Path) -> String {
 /// Clears PyInstaller variables that can cause crashes when yt-dlp.exe
 /// (a PyInstaller bundle) is spawned as a child process.
 fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &str) {
+    // Ensure TEMP/TMP point to a valid, writable system temp directory.
+    // The detached server process may inherit a broken or empty TEMP.
+    // PyInstaller (yt-dlp.exe) needs this to extract its bundled files.
+    let sys_temp = std::env::temp_dir();
+
     cmd.current_dir(work_dir)
         .env("PATH", path_env)
+        .env("TEMP", &sys_temp)
+        .env("TMP", &sys_temp)
         .env_remove("_MEIPASS2")
         .env_remove("_PYI_ARCHIVE_FILE")
         .env_remove("_PYI_SPLASH_IPC");
-
-    // Do NOT override TEMP/TMP — PyInstaller (yt-dlp.exe) needs the system
-    // temp dir for its extraction. Overriding to a non-existent path crashes it.
 }
 
 /// Apply CREATE_NO_WINDOW on Windows for ffmpeg/ffprobe processes.
