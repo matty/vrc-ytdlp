@@ -583,13 +583,9 @@ fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &str) {
         .env_remove("_PYI_ARCHIVE_FILE")
         .env_remove("_PYI_SPLASH_IPC");
 
-    // On Windows, prevent console windows from appearing for child processes
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    // Note: DO NOT set CREATE_NO_WINDOW for yt-dlp — it's a PyInstaller
+    // bundle that crashes without a console. The stdio is already piped
+    // (stdin=null, stdout/stderr=piped) so no visible window appears.
 }
 
 /// Apply CREATE_NO_WINDOW on Windows for ffmpeg/ffprobe processes.
