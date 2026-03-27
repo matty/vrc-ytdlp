@@ -23,11 +23,8 @@ fn spawn_ytdlp(
     let mut cmd = Command::new(exe_path);
     cmd.args(args)
         .current_dir(work_dir)
-        .env("TEMP", std::env::temp_dir())
-        .env("TMP", std::env::temp_dir())
-        .env_remove("_MEIPASS2")
-        .env_remove("_PYI_ARCHIVE_FILE")
-        .env_remove("_PYI_SPLASH_IPC")
+        .env("TEMP", &tmp_dir)
+        .env("TMP", &tmp_dir)
         .stdin(Stdio::null())
         .stdout(stdout)
         .stderr(Stdio::inherit());

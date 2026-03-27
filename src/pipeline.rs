@@ -575,18 +575,18 @@ fn augmented_path(tool_dir: &Path) -> std::ffi::OsString {
 /// (a PyInstaller bundle) is spawned as a child process.
 fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &std::ffi::OsStr) {
     // Create a tmp dir next to yt-dlp and set TEMP/TMP to it.
-    // This ensures PyInstaller has a writable temp directory for extraction,
-    // even when the process inherits a broken or empty TEMP.
+    // PyInstaller checks TMP first, then TEMP — both must be set.
+    // The directory MUST exist before yt-dlp starts.
     let tmp_dir = work_dir.join("tmp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
+    match std::fs::create_dir_all(&tmp_dir) {
+        Ok(_) => tracing::debug!(path = %tmp_dir.display(), "created temp dir for yt-dlp"),
+        Err(e) => tracing::error!(path = %tmp_dir.display(), error = %e, "failed to create temp dir"),
+    }
 
     cmd.current_dir(work_dir)
         .env("PATH", path_env)
         .env("TEMP", &tmp_dir)
-        .env("TMP", &tmp_dir)
-        .env_remove("_MEIPASS2")
-        .env_remove("_PYI_ARCHIVE_FILE")
-        .env_remove("_PYI_SPLASH_IPC");
+        .env("TMP", &tmp_dir);
 }
 
 /// Apply CREATE_NO_WINDOW on Windows for ffmpeg/ffprobe processes.
