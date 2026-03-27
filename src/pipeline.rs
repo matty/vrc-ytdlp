@@ -574,15 +574,16 @@ fn augmented_path(tool_dir: &Path) -> std::ffi::OsString {
 /// Clears PyInstaller variables that can cause crashes when yt-dlp.exe
 /// (a PyInstaller bundle) is spawned as a child process.
 fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &std::ffi::OsStr) {
-    // Ensure TEMP/TMP point to a valid, writable system temp directory.
-    // The detached server process may inherit a broken or empty TEMP.
-    // PyInstaller (yt-dlp.exe) needs this to extract its bundled files.
-    let sys_temp = std::env::temp_dir();
+    // Create a tmp dir next to yt-dlp and set TEMP/TMP to it.
+    // This ensures PyInstaller has a writable temp directory for extraction,
+    // even when the process inherits a broken or empty TEMP.
+    let tmp_dir = work_dir.join("tmp");
+    let _ = std::fs::create_dir_all(&tmp_dir);
 
     cmd.current_dir(work_dir)
         .env("PATH", path_env)
-        .env("TEMP", &sys_temp)
-        .env("TMP", &sys_temp)
+        .env("TEMP", &tmp_dir)
+        .env("TMP", &tmp_dir)
         .env_remove("_MEIPASS2")
         .env_remove("_PYI_ARCHIVE_FILE")
         .env_remove("_PYI_SPLASH_IPC");
