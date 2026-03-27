@@ -8,7 +8,13 @@ use serde::Deserialize;
 use crate::Config;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
-const ASSET_NAME: &str = "yt-dlp.exe";
+// Use yt-dlp_x86.exe on Windows (py2exe, no PyInstaller temp dir issues)
+// Use yt-dlp_linux on Linux
+const ASSET_NAME: &str = if cfg!(windows) {
+    "yt-dlp_x86.exe"
+} else {
+    "yt-dlp_linux"
+};
 
 #[derive(Deserialize)]
 struct GitHubRelease {
