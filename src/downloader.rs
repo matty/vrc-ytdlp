@@ -108,7 +108,7 @@ async fn download_release(
         .assets
         .iter()
         .find(|a| a.name == ASSET_NAME)
-        .context("yt-dlp.exe not found in release assets")?;
+        .context(format!("{ASSET_NAME} not found in release assets"))?;
 
     tracing::info!(url = %asset.browser_download_url, "downloading yt-dlp");
 
