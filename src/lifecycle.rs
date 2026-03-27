@@ -31,6 +31,11 @@ pub async fn run_managed_server(
     bgutil_pot_path: Option<PathBuf>,
     bgutil_pot_port: u16,
 ) -> Result<()> {
+    // On Windows, create a Job Object so all child processes (bgutil-pot,
+    // yt-dlp, ffmpeg) are automatically killed when our process exits.
+    #[cfg(windows)]
+    let _job = create_job_object().ok();
+
     let shutdown = CancellationToken::new();
 
     // 1. Spawn bgutil-pot if available
@@ -240,5 +245,66 @@ async fn monitor_bgutil_pot(
                 return;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows Job Object — ensures all child processes die with the parent
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+struct WinJobObject(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for WinJobObject {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
+/// Create a Windows Job Object and assign the current process to it.
+/// All child processes inherit the job and are killed when this process exits.
+#[cfg(windows)]
+fn create_job_object() -> Result<WinJobObject> {
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            anyhow::bail!("CreateJobObjectW failed");
+        }
+
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        if SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) == 0
+        {
+            windows_sys::Win32::Foundation::CloseHandle(job);
+            anyhow::bail!("SetInformationJobObject failed");
+        }
+
+        // Assign current process to the job
+        let current_process = windows_sys::Win32::System::Threading::GetCurrentProcess();
+        if AssignProcessToJobObject(job, current_process) == 0 {
+            // This can fail if the process is already in a job (e.g. from a debugger).
+            // Non-fatal — just log and continue without job-based cleanup.
+            windows_sys::Win32::Foundation::CloseHandle(job);
+            tracing::debug!("could not assign current process to job object (already in a job?)");
+            anyhow::bail!("AssignProcessToJobObject failed");
+        }
+
+        tracing::debug!("created job object for child process cleanup");
+        Ok(WinJobObject(job))
     }
 }

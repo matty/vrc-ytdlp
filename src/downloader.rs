@@ -121,7 +121,7 @@ async fn download_release(
         .bytes()
         .await?;
 
-    let tmp_path = exe_path.with_extension("exe.tmp");
+    let tmp_path = exe_path.with_file_name(".yt-dlp-download.tmp");
 
     // Write to temp, then replace
     if let Err(e) = write_and_replace(&tmp_path, exe_path, &bytes) {
@@ -136,8 +136,12 @@ async fn download_release(
 fn write_and_replace(tmp: &Path, target: &Path, bytes: &[u8]) -> Result<()> {
     fs::write(tmp, bytes).context("writing temp file")?;
 
-    if target.exists() {
-        fs::remove_file(target).context("removing old binary")?;
+    // On Windows, rename fails if destination exists; delete first.
+    // Ignore NotFound errors (file may not exist yet on first download).
+    if let Err(e) = fs::remove_file(target) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e).context("removing old binary");
+        }
     }
 
     fs::rename(tmp, target).context("renaming temp to target")

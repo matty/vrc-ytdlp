@@ -20,16 +20,19 @@ fn spawn_ytdlp(
         Stdio::inherit()
     };
 
-    Command::new(exe_path)
-        .args(args)
+    let mut cmd = Command::new(exe_path);
+    cmd.args(args)
         .current_dir(work_dir)
-        .env("TEMP", &tmp_dir)
-        .env("TMP", &tmp_dir)
+        .env("TEMP", std::env::temp_dir())
+        .env("TMP", std::env::temp_dir())
+        .env_remove("_MEIPASS2")
+        .env_remove("_PYI_ARCHIVE_FILE")
+        .env_remove("_PYI_SPLASH_IPC")
         .stdin(Stdio::null())
         .stdout(stdout)
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("spawning yt-dlp")
+        .stderr(Stdio::inherit());
+
+    cmd.spawn().context("spawning yt-dlp")
 }
 
 fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<()> {

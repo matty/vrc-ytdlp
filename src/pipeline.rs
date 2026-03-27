@@ -559,21 +559,21 @@ fn log_ytdlp_stderr(stream_id: &str, stderr_text: &str) {
     }
 }
 
-fn augmented_path(tool_dir: &Path) -> String {
-    let current_path = std::env::var("PATH").unwrap_or_default();
-    let tool_dir_str = tool_dir.to_string_lossy();
-    if current_path.is_empty() {
-        tool_dir_str.to_string()
-    } else {
+fn augmented_path(tool_dir: &Path) -> std::ffi::OsString {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut result = tool_dir.as_os_str().to_owned();
+    if !current.is_empty() {
         let sep = if cfg!(windows) { ";" } else { ":" };
-        format!("{tool_dir_str}{sep}{current_path}")
+        result.push(sep);
+        result.push(current);
     }
+    result
 }
 
 /// Apply common environment setup for spawning yt-dlp.
 /// Clears PyInstaller variables that can cause crashes when yt-dlp.exe
 /// (a PyInstaller bundle) is spawned as a child process.
-fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &str) {
+fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &std::ffi::OsStr) {
     // Ensure TEMP/TMP point to a valid, writable system temp directory.
     // The detached server process may inherit a broken or empty TEMP.
     // PyInstaller (yt-dlp.exe) needs this to extract its bundled files.
