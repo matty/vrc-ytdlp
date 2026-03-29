@@ -97,18 +97,28 @@ async fn main() -> Result<()> {
     ensure_ytdlp(&ytdlp_path, &config).await?;
     let args = filter_args(&raw_args, &config);
 
-    // Check if this is a --get-url request — route through media server
     let is_get_url = args.iter().any(|a| a == "--get-url");
+    let video_url = args
+        .iter()
+        .find(|a| a.starts_with("http://") || a.starts_with("https://"))
+        .cloned();
 
-    if is_get_url {
-        // Extract the video URL from filtered args (positional arg)
-        let video_url = args
-            .iter()
-            .find(|a| a.starts_with("http://") || a.starts_with("https://"))
-            .context("no video URL found in args")?
-            .clone();
+    tracing::info!(
+        url = video_url.as_deref().unwrap_or("(none)"),
+        get_url = is_get_url,
+        "request received"
+    );
 
-        tracing::info!(video_url = %video_url, "routing --get-url through media server");
+    // Only route YouTube URLs through our server — everything else gets
+    // passed straight to yt-dlp unmodified so it handles Cloudflare,
+    // impersonation, and site-specific quirks itself.
+    let is_youtube = video_url
+        .as_ref()
+        .map(|u| is_youtube_url(u))
+        .unwrap_or(false);
+
+    if is_get_url && is_youtube {
+        let video_url = video_url.unwrap();
 
         let url = ensure_server_and_stream(
             &config,
@@ -119,7 +129,7 @@ async fn main() -> Result<()> {
         .await?;
         println!("{url}");
     } else {
-        tracing::info!(args = ?args, "executing yt-dlp");
+        tracing::info!(url = video_url.as_deref().unwrap_or("(none)"), "passing through to yt-dlp");
         run_ytdlp(
             &ytdlp_path,
             &args,
@@ -214,6 +224,16 @@ fn default_execution_timeout_secs() -> u64 {
 fn default_update_check_days() -> u64 {
     1
 }
+fn default_extractor_args() -> Vec<String> {
+    vec![]
+}
+fn default_plugin_dirs() -> Option<String> {
+    Some(if cfg!(windows) {
+        "tools/yt-dlp-plugins".into()
+    } else {
+        "./yt-dlp-plugins".into()
+    })
+}
 fn default_server_port() -> u16 {
     9851
 }
@@ -256,10 +276,10 @@ pub struct Config {
     #[serde(default = "default_server_idle_timeout_secs")]
     pub server_idle_timeout_secs: u64,
     /// Directory containing yt-dlp plugins (e.g., PO token provider)
-    #[serde(default)]
+    #[serde(default = "default_plugin_dirs")]
     pub plugin_dirs: Option<String>,
-    /// Extra yt-dlp extractor args (e.g., ["youtube:player-client=mweb"])
-    #[serde(default)]
+    /// Extra yt-dlp extractor args
+    #[serde(default = "default_extractor_args")]
     pub extractor_args: Vec<String>,
     /// Port for the bgutil-pot PO token server
     #[serde(default = "default_bgutil_pot_port")]
@@ -288,8 +308,8 @@ impl Default for Config {
             update_check_days: default_update_check_days(),
             server_port: default_server_port(),
             server_idle_timeout_secs: default_server_idle_timeout_secs(),
-            plugin_dirs: None,
-            extractor_args: Vec::new(),
+            plugin_dirs: default_plugin_dirs(),
+            extractor_args: default_extractor_args(),
             bgutil_pot_port: default_bgutil_pot_port(),
             cache_dir: default_cache_dir(),
             cache_max_size_mb: default_cache_max_size_mb(),
@@ -432,6 +452,14 @@ fn find_allowed<'a>(arg: &str, allowed: &'a [String]) -> Option<&'a str> {
         }
     }
     None
+}
+
+// --- URL Classification ---
+
+fn is_youtube_url(url: &str) -> bool {
+    ["youtube.com", "youtu.be", "youtube-nocookie.com", "music.youtube.com"]
+        .iter()
+        .any(|host| url.contains(host))
 }
 
 // --- JS Runtime Detection ---

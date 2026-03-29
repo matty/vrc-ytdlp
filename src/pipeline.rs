@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 
 /// Configuration for the pipeline tools.
 #[derive(Clone, Debug)]
@@ -17,156 +18,183 @@ pub struct PipelineConfig {
     pub extractor_args: Vec<String>,
 }
 
-/// The running pipeline — holds child processes and provides the ffmpeg stdout.
-pub struct PipelineHandle {
-    pub ffmpeg_stdout: tokio::process::ChildStdout,
-    ytdlp_child: Option<Child>,
-    ffmpeg_child: Child,
-    temp_file: Option<PathBuf>,
-}
-
-impl PipelineHandle {
-    /// Spawn a background task that waits for processes to finish and cleans up.
-    /// Returns the ffmpeg stdout for streaming to the client.
-    pub fn into_monitored(mut self, stream_id: String) -> tokio::process::ChildStdout {
-        let stdout = self.ffmpeg_stdout;
-
-        tokio::spawn(async move {
-            match self.ffmpeg_child.wait().await {
-                Ok(status) if status.success() => {
-                    tracing::info!(id = %stream_id, "ffmpeg completed successfully");
-                }
-                Ok(status) => {
-                    tracing::warn!(id = %stream_id, status = %status, "ffmpeg exited with error");
-                }
-                Err(e) => tracing::error!(id = %stream_id, error = %e, "ffmpeg wait failed"),
-            }
-
-            if let Some(mut ytdlp) = self.ytdlp_child.take() {
-                match ytdlp.wait().await {
-                    Ok(status) if !status.success() => {
-                        tracing::warn!(id = %stream_id, status = %status, "yt-dlp exited with error");
-                    }
-                    Err(e) => tracing::error!(id = %stream_id, error = %e, "yt-dlp wait failed"),
-                    _ => {}
-                }
-            }
-
-            if let Some(path) = self.temp_file.take() {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    tracing::debug!(id = %stream_id, error = %e, path = %path.display(), "failed to remove temp file");
-                } else {
-                    tracing::debug!(id = %stream_id, path = %path.display(), "cleaned up temp file");
-                }
-            }
-        });
-
-        stdout
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Public API
+// Public API — Mode 1: HLS passthrough (fast)
 // ---------------------------------------------------------------------------
 
-/// Build and start the full media pipeline for a video URL.
-///
-/// Tries the pipe strategy first (instant streaming), falls back to temp file
-/// (reliable but delayed start) if the pipe fails.
-pub async fn start_pipeline(
+/// Result of URL extraction.
+pub struct ExtractedUrl {
+    pub url: String,
+    pub is_hls: bool,
+}
+
+/// Extract a streaming URL via yt-dlp --get-url. Returns the URL and whether
+/// it's an HLS m3u8 stream (which VRChat's AVPro can play natively).
+pub async fn extract_streaming_url(
     config: &PipelineConfig,
     video_url: &str,
     stream_id: &str,
-) -> Result<PipelineHandle> {
-    // Try pipe strategy first — streams data to client immediately
-    match spawn_pipe_pipeline(config, video_url, stream_id).await {
-        Ok(handle) => {
-            tracing::info!(id = %stream_id, "using pipe strategy (instant streaming)");
-            return Ok(handle);
-        }
-        Err(e) => {
-            tracing::warn!(id = %stream_id, error = %e, "pipe strategy failed, falling back to temp file");
-        }
-    }
-
-    // Fallback: download to temp file, then remux (reliable but slow start)
-    tracing::info!(id = %stream_id, "using temp file strategy");
-    spawn_tempfile_pipeline(config, video_url, stream_id).await
-}
-
-// ---------------------------------------------------------------------------
-// Strategy 1: Pipe (yt-dlp stdout → ffmpeg → fragmented MP4 stdout)
-// ---------------------------------------------------------------------------
-
-async fn spawn_pipe_pipeline(
-    config: &PipelineConfig,
-    video_url: &str,
-    stream_id: &str,
-) -> Result<PipelineHandle> {
+) -> Result<ExtractedUrl> {
     let work_dir = config.ytdlp_path.parent().unwrap_or(Path::new("."));
-    let tmp_dir = work_dir.join("tmp");
-    let _ = std::fs::create_dir_all(&tmp_dir);
     let path_env = augmented_path(work_dir);
 
-    let ytdlp_args = build_pipe_args(config, video_url);
-    tracing::debug!(id = %stream_id, args = ?ytdlp_args, "spawning yt-dlp pipe");
+    let mut args = build_common_args(config);
+    args.push("-f".into());
+    args.push("(mp4/best)[height<=?1080]".into());
+    args.push("--get-url".into());
+    args.push(video_url.into());
+
+    tracing::info!(id = %stream_id, "extracting streaming URL");
 
     let mut cmd = Command::new(&config.ytdlp_path);
-    cmd.args(&ytdlp_args)
+    cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_ytdlp_env(&mut cmd, work_dir, &path_env);
 
-    let mut ytdlp_child = cmd.spawn().context("spawning yt-dlp (pipe mode)")?;
+    #[cfg(windows)]
+    apply_no_window(&mut cmd);
 
-    if let Some(stderr) = ytdlp_child.stderr.take() {
-        let id = stream_id.to_string();
-        tokio::spawn(log_stderr("yt-dlp", id, stderr));
+    let output = cmd.output().await.context("running yt-dlp --get-url")?;
+
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    log_ytdlp_stderr(stream_id, &stderr_text);
+
+    if !output.status.success() {
+        bail!("yt-dlp --get-url failed: {}", stderr_text.lines()
+            .filter(|l| l.contains("ERROR"))
+            .last()
+            .unwrap_or("unknown error"));
     }
 
-    let ytdlp_stdout = ytdlp_child
-        .stdout
-        .take()
-        .context("no stdout from yt-dlp")?;
+    let url = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string();
 
-    // Convert tokio ChildStdout → Stdio for ffmpeg stdin
-    let stdin: Stdio = ytdlp_stdout
-        .try_into()
-        .context("converting yt-dlp stdout to ffmpeg stdin")?;
+    if url.is_empty() {
+        bail!("yt-dlp --get-url returned no URL");
+    }
 
-    let mut ffmpeg_child = spawn_ffmpeg_pipe(&config.ffmpeg_path, stdin, stream_id)?;
+    let is_hls = url.contains(".m3u8") || url.contains("manifest/hls");
+    tracing::info!(id = %stream_id, is_hls, "extracted URL");
 
-    let ffmpeg_stdout = ffmpeg_child
-        .stdout
-        .take()
-        .context("no stdout from ffmpeg")?;
+    Ok(ExtractedUrl { url, is_hls })
+}
 
-    Ok(PipelineHandle {
-        ffmpeg_stdout,
-        ytdlp_child: Some(ytdlp_child),
-        ffmpeg_child,
-        temp_file: None,
-    })
+/// Validate an HLS m3u8 URL by fetching the manifest and checking the first
+/// segment is accessible. Retries up to 7 times with 1.5s delay.
+pub async fn validate_hls_url(url: &str, stream_id: &str) -> bool {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    let manifest = match client.get(url).send().await {
+        Ok(r) if r.status().is_success() => match r.text().await {
+            Ok(t) => t,
+            Err(_) => return false,
+        },
+        _ => return false,
+    };
+
+    let segment_url = match manifest.lines().find(|l| !l.starts_with('#') && !l.trim().is_empty()) {
+        Some(u) => u.trim().to_string(),
+        None => return false,
+    };
+
+    for attempt in 1..=7 {
+        match client.head(&segment_url).send().await {
+            Ok(r) if r.status().is_success() => {
+                tracing::info!(id = %stream_id, attempt, "HLS segment validated");
+                return true;
+            }
+            Ok(r) => {
+                tracing::debug!(id = %stream_id, attempt, status = %r.status(), "HLS segment not ready");
+            }
+            Err(e) => {
+                tracing::debug!(id = %stream_id, attempt, error = %e, "HLS segment check failed");
+            }
+        }
+        if attempt < 7 {
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+    }
+
+    tracing::warn!(id = %stream_id, "HLS validation failed after 7 attempts");
+    false
 }
 
 // ---------------------------------------------------------------------------
-// Strategy 2: Temp file (yt-dlp → file → ffmpeg → fragmented MP4 stdout)
+// Public API — Mode 2: Download + remux (reliable fallback)
 // ---------------------------------------------------------------------------
 
-async fn spawn_tempfile_pipeline(
+/// Download a video and remux it into a VRChat-compatible MP4 file.
+///
+/// 1. Downloads via yt-dlp to a temp file
+/// 2. Probes codecs, remuxes/transcodes via ffmpeg to `output_path` with
+///    faststart moov placement (seekable from first byte)
+/// 3. Cleans up the temp file
+///
+/// The resulting file is a standard MP4 (h264+AAC) with proper duration and
+/// Content-Length — no fragmented/live-stream behaviour.
+pub async fn download_to_file(
     config: &PipelineConfig,
     video_url: &str,
     stream_id: &str,
-) -> Result<PipelineHandle> {
+    output_path: &Path,
+) -> Result<()> {
     let work_dir = config.ytdlp_path.parent().unwrap_or(Path::new("."));
     let tmp_dir = work_dir.join("tmp");
     let _ = std::fs::create_dir_all(&tmp_dir);
     let path_env = augmented_path(work_dir);
 
-    let temp_file = tmp_dir.join(format!("stream_{stream_id}.mp4"));
-    let ytdlp_args = build_file_args(config, video_url, &temp_file);
+    let dl_tmp = tmp_dir.join(format!("dl_{stream_id}.mp4"));
 
+    // --- Step 1: Download via yt-dlp ---
+    download_with_retries(config, video_url, stream_id, &dl_tmp, work_dir, &path_env).await?;
+
+    // --- Step 2: Probe and remux via ffmpeg ---
+    let (needs_transcode_video, needs_transcode_audio) =
+        probe_codecs(&config.ffmpeg_path, &dl_tmp).await;
+
+    remux_to_file(
+        &config.ffmpeg_path,
+        &dl_tmp,
+        output_path,
+        needs_transcode_video,
+        needs_transcode_audio,
+        stream_id,
+    )
+    .await?;
+
+    // --- Step 3: Cleanup ---
+    let _ = std::fs::remove_file(&dl_tmp);
+
+    let size = std::fs::metadata(output_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    tracing::info!(id = %stream_id, size, "download and remux complete");
+
+    Ok(())
+}
+
+/// Download a video via yt-dlp with retry logic for transient errors.
+async fn download_with_retries(
+    config: &PipelineConfig,
+    video_url: &str,
+    stream_id: &str,
+    output: &Path,
+    work_dir: &Path,
+    path_env: &std::ffi::OsStr,
+) -> Result<()> {
+    let ytdlp_args = build_file_args(config, video_url, output);
     let max_retries = 3;
     let mut last_error = String::new();
 
@@ -177,37 +205,29 @@ async fn spawn_tempfile_pipeline(
             tokio::time::sleep(delay).await;
         }
 
-        tracing::info!(
-            id = %stream_id, attempt, output = %temp_file.display(),
-            "downloading via yt-dlp to temp file"
-        );
+        tracing::info!(id = %stream_id, attempt, "downloading via yt-dlp");
 
-        let _ = std::fs::remove_file(&temp_file);
+        let _ = std::fs::remove_file(output);
 
         let mut cmd = Command::new(&config.ytdlp_path);
         cmd.args(&ytdlp_args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        apply_ytdlp_env(&mut cmd, work_dir, &path_env);
+        apply_ytdlp_env(&mut cmd, work_dir, path_env);
 
-        let output = cmd.output().await.context("running yt-dlp download")?;
+        #[cfg(windows)]
+        apply_no_window(&mut cmd);
 
-        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        let result = cmd.output().await.context("running yt-dlp download")?;
+        let stderr_text = String::from_utf8_lossy(&result.stderr);
         log_ytdlp_stderr(stream_id, &stderr_text);
 
-        if output.status.success() && temp_file.exists() {
-            let file_size = std::fs::metadata(&temp_file)
-                .map(|m| m.len())
-                .unwrap_or(0);
-
-            if file_size > 0 {
-                tracing::info!(
-                    id = %stream_id, size = file_size, attempt,
-                    "download complete, starting ffmpeg remux"
-                );
-                last_error.clear();
-                break;
+        if result.status.success() && output.exists() {
+            let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+            if size > 0 {
+                tracing::info!(id = %stream_id, size, attempt, "yt-dlp download complete");
+                return Ok(());
             }
         }
 
@@ -230,85 +250,24 @@ async fn spawn_tempfile_pipeline(
         tracing::warn!(id = %stream_id, attempt, "download failed (transient), will retry");
     }
 
-    if !last_error.is_empty() || !temp_file.exists() {
-        let _ = std::fs::remove_file(&temp_file);
-        bail!("yt-dlp download failed after {max_retries} attempts: {last_error}");
-    }
-
-    let file_size = std::fs::metadata(&temp_file)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    tracing::info!(id = %stream_id, size = file_size, "download complete, starting ffmpeg remux");
-
-    let (needs_transcode_video, needs_transcode_audio) =
-        probe_codecs(&config.ffmpeg_path, &temp_file).await;
-
-    let mut ffmpeg_child = spawn_ffmpeg_file(
-        &config.ffmpeg_path,
-        &temp_file,
-        needs_transcode_video,
-        needs_transcode_audio,
-        stream_id,
-    )?;
-
-    let ffmpeg_stdout = ffmpeg_child
-        .stdout
-        .take()
-        .context("no stdout from ffmpeg")?;
-
-    Ok(PipelineHandle {
-        ffmpeg_stdout,
-        ytdlp_child: None,
-        ffmpeg_child,
-        temp_file: Some(temp_file),
-    })
+    let _ = std::fs::remove_file(output);
+    bail!("yt-dlp download failed after {max_retries} attempts: {last_error}");
 }
 
-// ---------------------------------------------------------------------------
-// ffmpeg spawning
-// ---------------------------------------------------------------------------
-
-/// Spawn ffmpeg reading from a pipe — for the streaming strategy.
-fn spawn_ffmpeg_pipe(
+/// Remux (or transcode) to a standard MP4 with moov atom at the front.
+async fn remux_to_file(
     ffmpeg_path: &Path,
-    stdin: Stdio,
-    stream_id: &str,
-) -> Result<Child> {
-    let mut cmd = Command::new(ffmpeg_path);
-    cmd.args(["-hide_banner", "-loglevel", "warning"]);
-    cmd.args(["-probesize", "10M", "-analyzeduration", "10M"]);
-    cmd.args(["-i", "pipe:0"]);
-    cmd.args(["-c", "copy"]);
-    cmd.args(["-bsf:a", "aac_adtstoasc"]);
-    cmd.args([
-        "-movflags",
-        "+frag_keyframe+empty_moov+default_base_moof",
-    ]);
-    cmd.args(["-f", "mp4", "pipe:1"]);
-    cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    #[cfg(windows)]
-    apply_no_window(&mut cmd);
-
-    let mut child = cmd.spawn().context("spawning ffmpeg (pipe mode)")?;
-    if let Some(stderr) = child.stderr.take() {
-        let id = stream_id.to_string();
-        tokio::spawn(log_stderr("ffmpeg", id, stderr));
-    }
-    Ok(child)
-}
-
-/// Spawn ffmpeg reading from a file — for the temp file strategy.
-fn spawn_ffmpeg_file(
-    ffmpeg_path: &Path,
-    input_file: &Path,
+    input: &Path,
+    output: &Path,
     needs_transcode_video: bool,
     needs_transcode_audio: bool,
     stream_id: &str,
-) -> Result<Child> {
+) -> Result<()> {
+    tracing::info!(id = %stream_id, "remuxing to VRChat-compatible MP4");
+
     let mut cmd = Command::new(ffmpeg_path);
-    cmd.args(["-hide_banner", "-loglevel", "warning"]);
-    cmd.args(["-i", &input_file.to_string_lossy()]);
+    cmd.args(["-hide_banner", "-loglevel", "warning", "-y"]);
+    cmd.args(["-i", &input.to_string_lossy()]);
 
     if needs_transcode_video {
         tracing::info!(id = %stream_id, "transcoding video to h264");
@@ -325,24 +284,31 @@ fn spawn_ffmpeg_file(
     }
 
     cmd.args(["-bsf:a", "aac_adtstoasc"]);
-    cmd.args([
-        "-movflags",
-        "+frag_keyframe+empty_moov+default_base_moof",
-    ]);
-    cmd.args(["-f", "mp4", "pipe:1"]);
+    cmd.args(["-movflags", "+faststart"]);
+    cmd.args(["-f", "mp4"]);
+    cmd.arg(&output.to_string_lossy().to_string());
     cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
     #[cfg(windows)]
     apply_no_window(&mut cmd);
 
-    let mut child = cmd.spawn().context("spawning ffmpeg (file mode)")?;
-    if let Some(stderr) = child.stderr.take() {
-        let id = stream_id.to_string();
-        tokio::spawn(log_stderr("ffmpeg", id, stderr));
+    let result = cmd.output().await.context("running ffmpeg remux")?;
+
+    let stderr_text = String::from_utf8_lossy(&result.stderr);
+    for line in stderr_text.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            tracing::warn!(id = %stream_id, process = "ffmpeg", "{}", line);
+        }
     }
-    Ok(child)
+
+    if !result.status.success() {
+        bail!("ffmpeg remux failed with {}", result.status);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -395,39 +361,8 @@ fn build_common_args(config: &PipelineConfig) -> Vec<String> {
     args
 }
 
-/// Build args for the pipe strategy (yt-dlp stdout → ffmpeg).
-/// Favours HLS combined formats, then split formats (yt-dlp merges internally).
-fn build_pipe_args(config: &PipelineConfig, video_url: &str) -> Vec<String> {
-    let mut args = build_common_args(config);
-
-    // Format selector: HLS combined first (single stream, direct pipe),
-    // then split (yt-dlp merges internally via ffmpeg before piping),
-    // then any fallback.
-    args.push("-f".into());
-    args.push(
-        "b[height<=1080][protocol^=m3u8][vcodec^=avc][acodec^=mp4a]\
-         /b[height<=1080][protocol^=m3u8]\
-         /bv[vcodec^=avc][height<=1080]+ba[acodec^=mp4a]\
-         /bv[height<=1080]+ba\
-         /b[height<=1080]\
-         /b"
-        .into(),
-    );
-
-    // Merge split formats into MP4 container
-    args.push("--merge-output-format".into());
-    args.push("mp4".into());
-
-    // Output to stdout — yt-dlp sends progress/logs to stderr by default with -o -
-    args.push("-o".into());
-    args.push("-".into());
-    args.push("--newline".into());
-
-    args.push(video_url.into());
-    args
-}
-
-/// Build args for the temp file strategy (yt-dlp → file → ffmpeg).
+/// Build args for downloading to a temp file. yt-dlp merges split formats
+/// internally via ffmpeg before writing.
 fn build_file_args(config: &PipelineConfig, video_url: &str, output_path: &Path) -> Vec<String> {
     let mut args = build_common_args(config);
 
@@ -597,25 +532,3 @@ fn apply_no_window(cmd: &mut Command) {
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
-async fn log_stderr(
-    process_name: &'static str,
-    stream_id: String,
-    stderr: tokio::process::ChildStderr,
-) {
-    let reader = BufReader::new(stderr);
-    let mut lines = reader.lines();
-
-    while let Ok(Some(line)) = lines.next_line().await {
-        let line = line.trim().to_string();
-        if line.is_empty() {
-            continue;
-        }
-        if line.contains("ERROR") || line.contains("error") {
-            tracing::error!(id = %stream_id, process = process_name, "{}", line);
-        } else if line.contains("WARNING") || line.contains("warning") {
-            tracing::warn!(id = %stream_id, process = process_name, "{}", line);
-        } else {
-            tracing::debug!(id = %stream_id, process = process_name, "{}", line);
-        }
-    }
-}

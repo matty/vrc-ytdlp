@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::io::Write;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +34,8 @@ pub struct VideoCache {
     ttl_secs: u64,
     index: Mutex<HashMap<String, CacheEntry>>,
     inflight: Mutex<HashMap<String, broadcast::Sender<Result<(), String>>>>,
+    /// Tracks URLs with a background download in progress (Mode 1 → cache).
+    background_downloads: Mutex<HashSet<String>>,
 }
 
 impl VideoCache {
@@ -48,6 +49,7 @@ impl VideoCache {
             ttl_secs,
             index: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
+            background_downloads: Mutex::new(HashSet::new()),
         };
 
         cache.rebuild_index().await;
@@ -183,6 +185,22 @@ impl VideoCache {
         self.cache_dir.join(format!("{key}.tmp"))
     }
 
+    /// Returns true if this call claimed the background download slot (caller
+    /// should proceed). Returns false if another task is already downloading.
+    pub async fn start_background_download(&self, video_url: &str) -> bool {
+        self.background_downloads.lock().await.insert(video_url.to_string())
+    }
+
+    /// Check if a background download is in progress for this URL.
+    pub async fn is_background_downloading(&self, video_url: &str) -> bool {
+        self.background_downloads.lock().await.contains(video_url)
+    }
+
+    /// Mark a background download as finished (success or failure).
+    pub async fn finish_background_download(&self, video_url: &str) {
+        self.background_downloads.lock().await.remove(video_url);
+    }
+
     /// Evict expired entries (TTL) then over-limit entries (LRU).
     pub async fn evict(&self) {
         // Collect paths to delete under lock, then release lock before doing I/O
@@ -298,133 +316,76 @@ impl VideoCache {
 }
 
 // ---------------------------------------------------------------------------
-// Tee stream — writes to cache file while yielding to HTTP response
-// ---------------------------------------------------------------------------
-
-/// Create a stream that reads from ffmpeg stdout, writes each chunk to a cache
-/// file, and yields chunks to the HTTP response. On completion, finalizes the
-/// cache entry. On drop without completion, cleans up the temp file.
-pub fn tee_stream(
-    stdout: tokio::process::ChildStdout,
-    cache_file: std::fs::File,
-    cache: Arc<VideoCache>,
-    video_url: String,
-) -> TeeStream {
-    let writer = std::sync::Mutex::new(Some(std::io::BufWriter::with_capacity(
-        256 * 1024,
-        cache_file,
-    )));
-
-    TeeStream {
-        inner: ReaderStream::new(stdout),
-        writer,
-        cache,
-        video_url,
-        completed: std::sync::atomic::AtomicBool::new(false),
-    }
-}
-
-pin_project_lite::pin_project! {
-    /// Stream that tees ffmpeg output to a cache file while yielding to HTTP response.
-    pub struct TeeStream {
-        #[pin]
-        inner: ReaderStream<tokio::process::ChildStdout>,
-        writer: std::sync::Mutex<Option<std::io::BufWriter<std::fs::File>>>,
-        cache: Arc<VideoCache>,
-        video_url: String,
-        completed: std::sync::atomic::AtomicBool,
-    }
-
-    impl PinnedDrop for TeeStream {
-        fn drop(this: Pin<&mut Self>) {
-            let this = this.project();
-            if !this.completed.load(std::sync::atomic::Ordering::Relaxed) {
-                let cache = this.cache.clone();
-                let url = this.video_url.clone();
-                tokio::spawn(async move {
-                    cache
-                        .fail_download(&url, "stream dropped before completion")
-                        .await;
-                });
-            }
-        }
-    }
-}
-
-impl futures_core::Stream for TeeStream {
-    type Item = Result<tokio_util::bytes::Bytes, std::io::Error>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let this = self.project();
-
-        match this.inner.poll_next(cx) {
-            std::task::Poll::Ready(Some(Ok(bytes))) => {
-                if let Ok(mut guard) = this.writer.lock() {
-                    if let Some(ref mut w) = *guard {
-                        if w.write_all(&bytes).is_err() {
-                            let _ = guard.take();
-                        }
-                    }
-                }
-                std::task::Poll::Ready(Some(Ok(bytes)))
-            }
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => {
-                if let Ok(mut guard) = this.writer.lock() {
-                    if let Some(mut w) = guard.take() {
-                        let _ = w.flush();
-                    }
-                }
-                this.completed
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-
-                let cache = this.cache.clone();
-                let url = this.video_url.clone();
-                tokio::spawn(async move {
-                    let tmp = cache.tmp_path(&url);
-                    if let Err(e) = cache.finish_download(&url, &tmp).await {
-                        tracing::warn!(error = %e, "failed to finalize cache entry");
-                    }
-                });
-
-                std::task::Poll::Ready(None)
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
-
-
-// ---------------------------------------------------------------------------
 // Serve from cache
 // ---------------------------------------------------------------------------
 
-pub async fn serve_cached_file(path: &Path) -> Response<Body> {
-    match tokio::fs::File::open(path).await {
-        Ok(file) => {
-            let size = file
-                .metadata()
-                .await
-                .map(|m| m.len())
-                .ok();
-            let stream = ReaderStream::new(file);
-            let mut builder = Response::builder()
-                .header("content-type", "video/mp4");
-            if let Some(len) = size {
-                builder = builder.header("content-length", len);
-            }
-            builder.body(Body::from_stream(stream)).unwrap()
-        }
+/// Serve a cached file with optional HTTP Range support for seeking.
+/// VRChat video players rely on Range requests to seek to specific timestamps.
+pub async fn serve_cached_file(
+    path: &Path,
+    range: Option<(u64, Option<u64>)>,
+) -> Response<Body> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(f) => f,
         Err(e) => {
             tracing::error!(error = %e, path = %path.display(), "failed to open cached file");
-            Response::builder()
+            return Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::from("cache read error"))
-                .unwrap()
+                .unwrap();
         }
+    };
+
+    let total_size = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    if let Some((start, end)) = range {
+        let end = end.unwrap_or(total_size.saturating_sub(1)).min(total_size.saturating_sub(1));
+
+        if start > end || start >= total_size {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header("content-range", format!("bytes */{total_size}"))
+                .body(Body::empty())
+                .unwrap();
+        }
+
+        let length = end - start + 1;
+
+        if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
+            tracing::error!(error = %e, "seek failed");
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("seek error"))
+                .unwrap();
+        }
+
+        let limited = file.take(length);
+        let stream = ReaderStream::new(limited);
+
+        Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header("content-type", "video/mp4")
+            .header("accept-ranges", "bytes")
+            .header("content-range", format!("bytes {start}-{end}/{total_size}"))
+            .header("content-length", length)
+            .body(Body::from_stream(stream))
+            .unwrap()
+    } else {
+        // Full response with Accept-Ranges to advertise seek support
+        let stream = ReaderStream::new(file);
+        let mut builder = Response::builder()
+            .header("content-type", "video/mp4")
+            .header("accept-ranges", "bytes");
+        if total_size > 0 {
+            builder = builder.header("content-length", total_size);
+        }
+        builder.body(Body::from_stream(stream)).unwrap()
     }
 }
 

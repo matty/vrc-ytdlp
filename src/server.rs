@@ -12,7 +12,6 @@ use axum::http::{Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Router;
-use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 
 use anyhow::{Context, Result};
@@ -24,10 +23,11 @@ use crate::pipeline::{self, PipelineConfig};
 // --- State ---
 
 struct StreamEntry {
-    /// Original video URL (e.g. YouTube URL)
     video_url: String,
-    /// yt-dlp args (format, cookies, etc.) — no --get-url, no video URL
     ytdlp_args: Vec<String>,
+    /// Last time this entry was accessed (registration or GET request).
+    /// The periodic purge removes entries idle for longer than 5 minutes.
+    last_accessed: u64,
 }
 
 pub struct ServerConfig {
@@ -116,6 +116,7 @@ async fn register_stream(
         StreamEntry {
             video_url: req.video_url,
             ytdlp_args: req.ytdlp_args,
+            last_accessed: now_secs(),
         },
     );
 
@@ -125,14 +126,16 @@ async fn register_stream(
 async fn stream_video(
     Path(id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     state.touch();
 
     let entry = {
-        let streams = state.streams.lock().await;
-        streams
-            .get(&id)
-            .map(|e| (e.video_url.clone(), e.ytdlp_args.clone()))
+        let mut streams = state.streams.lock().await;
+        streams.get_mut(&id).map(|e| {
+            e.last_accessed = now_secs();
+            (e.video_url.clone(), e.ytdlp_args.clone())
+        })
     };
 
     let (video_url, ytdlp_args) = match entry {
@@ -143,32 +146,42 @@ async fn stream_video(
         }
     };
 
+    // Parse Range header (for seek support in VRChat video players)
+    let range = headers
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| parse_range_header(s));
+
     // --- Check cache ---
     if let Some(cached_path) = state.cache.get(&video_url).await {
         tracing::info!(id = %id, video_url = %video_url, "serving from cache");
-        state.streams.lock().await.remove(&id);
-        return cache::serve_cached_file(&cached_path).await;
+        // Don't remove the stream entry — VRChat video players may re-request
+        // the same stream ID for seeking. Stale entries are purged periodically.
+        return cache::serve_cached_file(&cached_path, range).await;
     }
 
-    // --- Check if another request is already downloading this URL ---
-    if let Some(mut waiter) = state.cache.start_download(&video_url).await {
+    // --- Background download already running? Don't block, try Mode 1 again ---
+    if state.cache.is_background_downloading(&video_url).await {
+        tracing::info!(id = %id, "background download in progress, trying HLS redirect");
+        // Fall through to Mode 1 extraction below
+    }
+    // --- Another foreground request downloading? Wait for it ---
+    else if let Some(mut waiter) = state.cache.start_download(&video_url).await {
         tracing::info!(id = %id, "waiting for in-progress download of same URL");
         match waiter.recv().await {
             Ok(Ok(())) => {
                 if let Some(cached_path) = state.cache.get(&video_url).await {
                     tracing::info!(id = %id, "serving from cache after wait");
-                    state.streams.lock().await.remove(&id);
-                    return cache::serve_cached_file(&cached_path).await;
+                    return cache::serve_cached_file(&cached_path, range).await;
                 }
             }
             _ => {
-                tracing::warn!(id = %id, "waited download failed, starting own pipeline");
+                tracing::warn!(id = %id, "waited download failed");
             }
         }
     }
 
-    // --- Cache miss: run the pipeline ---
-    tracing::info!(id = %id, video_url = %video_url, "cache miss, starting pipeline");
+    tracing::info!(id = %id, video_url = %video_url, "cache miss");
 
     let pipeline_config = PipelineConfig {
         ytdlp_path: state.server_config.ytdlp_path.clone(),
@@ -178,60 +191,98 @@ async fn stream_video(
         extractor_args: state.server_config.extractor_args.clone(),
     };
 
+    // --- Mode 1: HLS passthrough (fast) ---
+    if let Ok(extracted) = pipeline::extract_streaming_url(&pipeline_config, &video_url, &id).await
+    {
+        if extracted.is_hls && pipeline::validate_hls_url(&extracted.url, &id).await {
+            tracing::info!(id = %id, "Mode 1: redirecting to HLS stream");
+            spawn_background_download(state.clone(), pipeline_config.clone(), video_url, id);
+            return Response::builder()
+                .status(StatusCode::FOUND)
+                .header("location", &extracted.url)
+                .body(Body::empty())
+                .unwrap();
+        }
+    }
+
+    // --- Mode 2: Download + remux + serve (reliable fallback) ---
+    tracing::info!(id = %id, "Mode 2: downloading and remuxing");
+    match download_and_cache(&state, &pipeline_config, &video_url, &id).await {
+        Ok(cached_path) => cache::serve_cached_file(&cached_path, range).await,
+        Err(e) => {
+            tracing::error!(id = %id, error = %e, "pipeline failed");
+            error_response(StatusCode::BAD_GATEWAY, &format!("pipeline failed: {e}"))
+        }
+    }
+}
+
+/// Download a video, remux it, and register in cache. Used by both Mode 2
+/// (foreground) and the background caching task.
+async fn download_and_cache(
+    state: &Arc<AppState>,
+    config: &PipelineConfig,
+    video_url: &str,
+    stream_id: &str,
+) -> Result<PathBuf> {
     state.active_pipelines.fetch_add(1, Ordering::Relaxed);
 
-    let handle = match pipeline::start_pipeline(&pipeline_config, &video_url, &id).await {
-        Ok(h) => h,
+    let cache_tmp = state.cache.tmp_path(video_url);
+    let result = pipeline::download_to_file(config, video_url, stream_id, &cache_tmp).await;
+
+    state.active_pipelines.fetch_sub(1, Ordering::Relaxed);
+    state.touch();
+
+    match result {
+        Ok(()) => state
+            .cache
+            .finish_download(video_url, &cache_tmp)
+            .await
+            .context("cache finalization failed"),
         Err(e) => {
-            state.active_pipelines.fetch_sub(1, Ordering::Relaxed);
-            state.cache.fail_download(&video_url, &e.to_string()).await;
-            tracing::error!(id = %id, error = %e, "pipeline failed");
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("pipeline failed: {e}"),
-            );
+            state
+                .cache
+                .fail_download(video_url, &e.to_string())
+                .await;
+            Err(e)
         }
-    };
+    }
+}
 
-    let ffmpeg_stdout = handle.into_monitored(id.clone());
-
-    // Decrement active count and clean up stream entry
-    let state_clone = state.clone();
-    let id_clone = id.clone();
+/// Fire-and-forget background download for Mode 1 caching.
+fn spawn_background_download(
+    state: Arc<AppState>,
+    config: PipelineConfig,
+    video_url: String,
+    stream_id: String,
+) {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        state_clone.active_pipelines.fetch_sub(1, Ordering::Relaxed);
-        state_clone.streams.lock().await.remove(&id_clone);
-        state_clone.touch();
-        tracing::debug!(id = %id_clone, "stream cleaned up");
+        if !state.cache.start_background_download(&video_url).await {
+            return; // another task already downloading
+        }
+        let result = download_and_cache(&state, &config, &video_url, &stream_id).await;
+        state.cache.finish_background_download(&video_url).await;
+        match result {
+            Ok(_) => tracing::info!(id = %stream_id, "background cache complete"),
+            Err(e) => tracing::warn!(id = %stream_id, error = %e, "background download failed"),
+        }
     });
+}
 
-    // Tee ffmpeg output to cache file while streaming to client
-    let cache_tmp = state.cache.tmp_path(&video_url);
-    let body = match std::fs::File::create(&cache_tmp) {
-        Ok(file) => {
-            let stream = cache::tee_stream(
-                ffmpeg_stdout,
-                file,
-                state.cache.clone(),
-                video_url,
-            );
-            Body::from_stream(stream)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "couldn't create cache file, streaming without caching");
-            state.cache.fail_download(&video_url, "cache file creation failed").await;
-            Body::from_stream(ReaderStream::new(ffmpeg_stdout))
-        }
+/// Parse "Range: bytes=START-END" header. Returns (start, optional_end).
+fn parse_range_header(header: &str) -> Option<(u64, Option<u64>)> {
+    let bytes_prefix = header.strip_prefix("bytes=")?;
+    let mut parts = bytes_prefix.splitn(2, '-');
+    let start_str = parts.next()?;
+    let end_str = parts.next()?;
+
+    let start = start_str.parse::<u64>().ok()?;
+    let end = if end_str.is_empty() {
+        None
+    } else {
+        Some(end_str.parse::<u64>().ok()?)
     };
 
-    tracing::info!(id = %id, "streaming response started");
-
-    Response::builder()
-        .header("content-type", "video/mp4")
-        .header("cache-control", "no-cache")
-        .body(body)
-        .unwrap()
+    Some((start, end))
 }
 
 fn error_response(status: StatusCode, msg: &str) -> Response<Body> {
@@ -271,15 +322,33 @@ pub async fn run_server(
 
     tracing::info!(addr = %addr, "media server started");
 
-    // Idle timeout watcher — cancels the shutdown token instead of exit(0)
+    // Idle timeout watcher — cancels the shutdown token when idle.
+    // Also periodically cleans up stale stream entries (registered but never requested).
     let state_for_timeout = state.clone();
     let idle_shutdown = shutdown.clone();
     tokio::spawn(async move {
+        let mut tick = 0u64;
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
             if idle_shutdown.is_cancelled() {
                 return;
             }
+            tick += 1;
+
+            // Every 60s, purge stale stream entries older than 5 minutes
+            if tick % 6 == 0 {
+                let now = crate::util::now_secs();
+                let mut streams = state_for_timeout.streams.lock().await;
+                let before = streams.len();
+                streams.retain(|_id, entry| {
+                    now.saturating_sub(entry.last_accessed) < 300
+                });
+                let removed = before - streams.len();
+                if removed > 0 {
+                    tracing::info!(removed, "purged stale stream entries");
+                }
+            }
+
             let idle = state_for_timeout.idle_secs();
             let active = state_for_timeout.active_pipelines.load(Ordering::Relaxed);
             if idle >= idle_timeout_secs && active == 0 {
@@ -309,9 +378,24 @@ pub async fn check_server_health(port: u16) -> bool {
 pub fn spawn_server_process(port: u16, idle_timeout_secs: u64) -> Result<()> {
     let exe = std::env::current_exe().context("getting current exe path")?;
 
+    // Prevent the server from inheriting our stdout/stderr handles.
+    // Without this, a parent process (e.g., VRChat) waiting on our pipes
+    // will hang forever because the server holds a copy of the handle.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+        unsafe {
+            let stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+            let stderr = GetStdHandle(STD_ERROR_HANDLE);
+            SetHandleInformation(stdout, HANDLE_FLAG_INHERIT, 0);
+            SetHandleInformation(stderr, HANDLE_FLAG_INHERIT, 0);
+        }
+    }
+
     tracing::debug!(exe = %exe.display(), port, idle_timeout_secs, "spawning detached server process");
 
-    let mut cmd = std::process::Command::new(exe);
+    let mut cmd = std::process::Command::new(&exe);
     cmd.args([
         "--serve",
         "--port",
@@ -331,7 +415,21 @@ pub fn spawn_server_process(port: u16, idle_timeout_secs: u64) -> Result<()> {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
         const DETACHED_PROCESS: u32 = 0x00000008;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
+
+        // Try with breakaway first — escapes VRChat's Job Object so the
+        // server isn't killed when VRChat terminates our CLI process.
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+        match cmd.spawn() {
+            Ok(_) => {
+                tracing::debug!("server process spawned (with job breakaway)");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "breakaway spawn failed, retrying without");
+                cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+            }
+        }
     }
 
     cmd.spawn().context("spawning server process")?;

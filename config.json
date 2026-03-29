@@ -11,7 +11,7 @@
     "-f",
     "bv[vcodec^=avc][height<=1080]+ba[acodec^=mp4a]/bv[height<=1080]+ba/b[height<=1080]/b"
   ],
-  "cookies": true,
+  "cookies": false,
   "cookies_browser": "firefox",
   "execution_timeout_secs": 120,
   "update_check_days": 1,
