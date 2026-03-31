@@ -1,5 +1,7 @@
 mod config;
 mod paths;
+mod theme;
+mod widget;
 
 use iced::{Element, Theme};
 
