@@ -1,3 +1,4 @@
+mod config;
 mod paths;
 
 use iced::{Element, Theme};
