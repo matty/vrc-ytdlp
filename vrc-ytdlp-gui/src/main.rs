@@ -388,7 +388,12 @@ impl App {
         match &self.phase {
             Phase::Wizard(state) => wizard::view(state).map(Message::Wizard),
             Phase::Main => {
-                let sidebar = sidebar::sidebar_view(self.active_tab, Message::TabSelected);
+                let sidebar = sidebar::sidebar_view(
+                    self.active_tab,
+                    self.server_tab.running,
+                    self.server_tab.port,
+                    Message::TabSelected,
+                );
 
                 let content: Element<Message> = match self.active_tab {
                     Tab::Dashboard => {

@@ -1,5 +1,5 @@
-use iced::widget::{button, column, row, text};
-use iced::{Element, Task};
+use iced::widget::{column, container, row, text, Space};
+use iced::{Element, Length, Task};
 
 use crate::services::server_manager;
 use crate::theme;
@@ -113,57 +113,76 @@ pub fn update(state: &mut ServerTabState, msg: ServerMessage) -> Task<ServerMess
 // ---------------------------------------------------------------------------
 
 pub fn view(state: &ServerTabState) -> Element<'_, ServerMessage> {
+    // Main status card
     let dot_color = if state.running {
-        theme::GREEN
+        theme::STATUS_GREEN
     } else {
-        theme::RED
+        theme::STATUS_RED
     };
-    let status_label = if state.running { "Running" } else { "Stopped" };
 
-    let status_row = row![
-        widget::status_dot(dot_color),
-        text(format!("Server: {status_label}")).size(16),
-    ]
-    .spacing(8)
-    .align_y(iced::Alignment::Center);
+    let status_label = if state.running {
+        format!("Running on port {}", state.port)
+    } else {
+        "Stopped".to_string()
+    };
 
-    let info = column![
-        text(format!("Port: {}", state.port)).size(14).color(theme::GREY),
-        text(format!("Idle timeout: {} secs", state.idle_timeout))
-            .size(14)
-            .color(theme::GREY),
-    ]
-    .spacing(4);
-
-    let pid_text = match state.pid {
-        Some(pid) => format!("PID: {pid}"),
+    let pid_label = match state.pid {
+        Some(pid) => format!("PID {pid}"),
         None => "PID: N/A".to_string(),
     };
 
+    let idle_label = format!("Idle timeout: {} secs", state.idle_timeout);
+
     let action_btn = if state.running {
-        button("Stop Server")
-            .on_press(ServerMessage::Stop)
-            .style(button::danger)
+        widget::danger_button("Stop Server", Some(ServerMessage::Stop))
     } else {
-        button("Start Server")
-            .on_press(ServerMessage::Start)
-            .style(button::primary)
+        widget::primary_button("Start Server", Some(ServerMessage::Start))
     };
 
+    let status_card = widget::card(
+        column![
+            text("STATUS").size(10).color(theme::TEXT_SECTION),
+            row![
+                widget::status_dot(dot_color),
+                text(status_label).size(14).color(theme::TEXT_PRIMARY),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            container(
+                column![
+                    text(pid_label).size(11).color(theme::TEXT_LABEL),
+                    text(idle_label).size(11).color(theme::TEXT_LABEL),
+                ]
+                .spacing(3)
+            )
+            .padding(iced::Padding { top: 4.0, right: 0.0, bottom: 4.0, left: 0.0 }),
+            Space::with_height(4),
+            action_btn,
+        ]
+        .spacing(8)
+        .width(Length::Fill),
+    );
+
     let mut content = column![
-        widget::section_header("Server Control"),
-        widget::card(
-            column![status_row, info, text(pid_text).size(14).color(theme::GREY), action_btn,]
-                .spacing(theme::SPACING),
-        ),
+        widget::page_header("Server", "Control the media proxy server"),
+        Space::with_height(theme::SPACING_LG),
+        status_card,
     ]
     .spacing(theme::SPACING);
 
     if let Some(err) = &state.start_error {
-        content = content.push(text(format!("Start error: {err}")).size(13).color(theme::RED));
+        content = content.push(
+            text(format!("Start error: {err}"))
+                .size(12)
+                .color(theme::STATUS_RED),
+        );
     }
     if let Some(err) = &state.stop_error {
-        content = content.push(text(format!("Stop error: {err}")).size(13).color(theme::RED));
+        content = content.push(
+            text(format!("Stop error: {err}"))
+                .size(12)
+                .color(theme::STATUS_RED),
+        );
     }
 
     content.into()

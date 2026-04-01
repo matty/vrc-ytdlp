@@ -1,4 +1,4 @@
-use iced::widget::{button, column, row, scrollable, text, text_input};
+use iced::widget::{column, container, row, scrollable, text, text_input};
 use iced::{Element, Length};
 
 use crate::services::log_watcher::{LogLevel, LogLine, LogTailer};
@@ -95,16 +95,43 @@ pub fn update(state: &mut LogsTabState, msg: LogsMessage) {
 // ---------------------------------------------------------------------------
 
 pub fn view(state: &LogsTabState) -> Element<'_, LogsMessage> {
+    // --- Toolbar ---
+    let filter_input = container(
+        text_input("Filter...", &state.filter)
+            .on_input(LogsMessage::FilterChanged)
+            .size(12)
+            .padding(iced::Padding {
+                top: 6.0,
+                right: 10.0,
+                bottom: 6.0,
+                left: 10.0,
+            }),
+    )
+    .style(|_: &iced::Theme| iced::widget::container::Style {
+        background: Some(iced::Background::Color(theme::BG_INPUT)),
+        border: iced::Border {
+            width: 1.0,
+            radius: theme::INPUT_RADIUS.into(),
+            color: theme::BORDER_INPUT,
+        },
+        ..Default::default()
+    })
+    .width(Length::Fill);
+
     let toolbar = row![
-        text_input("Filter...", &state.filter).on_input(LogsMessage::FilterChanged),
-        widget::labeled_toggle("Auto-scroll", state.auto_scroll, LogsMessage::ToggleAutoScroll),
-        button("Reload")
-            .on_press(LogsMessage::Reload)
-            .style(button::secondary),
+        filter_input,
+        widget::labeled_toggle(
+            "Auto-scroll",
+            "Follow new log entries",
+            state.auto_scroll,
+            LogsMessage::ToggleAutoScroll,
+        ),
+        widget::secondary_button("Reload", Some(LogsMessage::Reload)),
     ]
     .spacing(theme::SPACING)
     .align_y(iced::Alignment::Center);
 
+    // --- Log lines ---
     let filter_lower = state.filter.to_lowercase();
     let filtered: Vec<&LogLine> = state
         .lines
@@ -112,31 +139,80 @@ pub fn view(state: &LogsTabState) -> Element<'_, LogsMessage> {
         .filter(|l| filter_lower.is_empty() || l.text.to_lowercase().contains(&filter_lower))
         .collect();
 
-    let mut log_col = column![].spacing(2);
+    let mut log_col = column![].spacing(1);
     for line in &filtered {
         let color = match line.level {
-            LogLevel::Error => theme::RED,
-            LogLevel::Warn => theme::YELLOW,
-            LogLevel::Debug => theme::GREY,
-            LogLevel::Info | LogLevel::Other => iced::Color::WHITE,
+            LogLevel::Error => theme::STATUS_RED,
+            LogLevel::Warn => theme::STATUS_YELLOW,
+            LogLevel::Debug => theme::TEXT_SECONDARY,
+            LogLevel::Info | LogLevel::Other => theme::TEXT_PRIMARY,
         };
         log_col = log_col.push(
             text(line.text.clone())
-                .size(12)
+                .size(11)
                 .font(iced::Font::MONOSPACE)
                 .color(color),
         );
     }
 
-    let log_scroll = scrollable(log_col).height(Length::Fill);
+    // Error overlay at bottom
+    let error_el: Element<'_, LogsMessage> = if let Some(err) = &state.error {
+        text(format!("Error: {err}"))
+            .size(12)
+            .color(theme::STATUS_RED)
+            .into()
+    } else {
+        iced::widget::Space::new(0, 0).into()
+    };
 
-    let mut content = column![widget::section_header("Logs"), toolbar, log_scroll]
-        .spacing(theme::SPACING)
-        .height(Length::Fill);
+    let log_area = container(
+        scrollable(
+            container(log_col)
+                .padding(iced::Padding {
+                    top: 10.0,
+                    right: 14.0,
+                    bottom: 10.0,
+                    left: 14.0,
+                })
+                .width(Length::Fill),
+        )
+        .height(Length::Fill),
+    )
+    .style(|_: &iced::Theme| iced::widget::container::Style {
+        background: Some(iced::Background::Color(theme::BG_INPUT)),
+        border: iced::Border {
+            width: 1.0,
+            radius: theme::INPUT_RADIUS.into(),
+            color: theme::BORDER_INPUT,
+        },
+        ..Default::default()
+    })
+    .width(Length::Fill)
+    .height(Length::Fill);
 
-    if let Some(err) = &state.error {
-        content = content.push(text(format!("Error: {err}")).size(13).color(theme::RED));
-    }
+    let header_row = row![
+        widget::page_header("Logs", "View application log output"),
+    ]
+    .align_y(iced::Alignment::Center);
 
-    content.into()
+    let inner = column![
+        header_row,
+        widget::section_divider(),
+        toolbar,
+        log_area,
+        error_el,
+    ]
+    .spacing(theme::SPACING_LG)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    container(inner)
+        .padding(iced::Padding {
+            top: 24.0,
+            right: 28.0,
+            bottom: 24.0,
+            left: 28.0,
+        })
+        .height(Length::Fill)
+        .into()
 }

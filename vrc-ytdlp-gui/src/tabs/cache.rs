@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use iced::widget::{button, column, progress_bar, row, scrollable, text};
+use iced::widget::{column, container, progress_bar, row, scrollable, text};
 use iced::{Element, Length, Task};
 
 use crate::services::cache_scanner::{self, CacheSummary};
@@ -162,76 +162,123 @@ pub fn view(state: &CacheTabState) -> Element<'_, CacheMessage> {
         .as_ref()
         .map(|s| s.total_size_bytes)
         .unwrap_or(0);
+    let entry_count = state
+        .summary
+        .as_ref()
+        .map(|s| s.entry_count)
+        .unwrap_or(0);
     let ratio = if max_bytes > 0 {
         (total as f32 / max_bytes as f32).min(1.0)
     } else {
         0.0
     };
 
-    let usage_text = format!(
-        "{} / {} MB used",
-        cache_scanner::format_size(total),
-        state.max_size_mb
+    let used_str = cache_scanner::format_size(total);
+    let pct = (ratio * 100.0).round() as u32;
+
+    // --- Toolbar buttons ---
+    let refresh_btn = if state.scanning {
+        widget::primary_button("Scanning...", None)
+    } else {
+        widget::primary_button("Refresh", Some(CacheMessage::Scan))
+    };
+
+    let clear_area: Element<'_, CacheMessage> = if state.clear_confirm {
+        row![
+            text("Are you sure?").size(12).color(theme::STATUS_RED),
+            widget::danger_button("Yes, clear all", Some(CacheMessage::ConfirmClear)),
+            widget::secondary_button("Cancel", Some(CacheMessage::CancelClear)),
+        ]
+        .spacing(theme::SPACING_SM)
+        .align_y(iced::Alignment::Center)
+        .into()
+    } else {
+        widget::danger_button("Clear All", Some(CacheMessage::ClearAll))
+    };
+
+    // --- Usage summary card ---
+    let usage_card = widget::card(
+        column![
+            row![
+                text(used_str.clone())
+                    .size(22)
+                    .color(theme::TEXT_PRIMARY),
+                iced::widget::Space::new(Length::Fill, 0),
+                text(format!("{pct}% of {} MB · {entry_count} files", state.max_size_mb))
+                    .size(11)
+                    .color(theme::TEXT_LABEL),
+            ]
+            .align_y(iced::Alignment::End),
+            progress_bar(0.0..=1.0, ratio),
+        ]
+        .spacing(10),
     );
 
-    let scan_btn = if state.scanning {
-        button("Scanning...").style(button::secondary)
-    } else {
-        button("Refresh")
-            .on_press(CacheMessage::Scan)
-            .style(button::primary)
-    };
-
-    let clear_btn = if state.clear_confirm {
-        row![
-            button("Yes, clear all")
-                .on_press(CacheMessage::ConfirmClear)
-                .style(button::danger),
-            button("Cancel")
-                .on_press(CacheMessage::CancelClear)
-                .style(button::secondary),
-        ]
-        .spacing(8)
-    } else {
-        row![button("Clear All")
-            .on_press(CacheMessage::ClearAll)
-            .style(button::danger),]
-    };
-
-    let header = column![
-        widget::section_header("Cache Management"),
-        row![scan_btn, clear_btn].spacing(theme::SPACING),
-        text(usage_text).size(14),
-        progress_bar(0.0..=1.0, ratio),
+    // --- Header with buttons ---
+    let header_row = row![
+        widget::page_header("Cache", "Manage cached video files"),
+        iced::widget::Space::new(Length::Fill, 0),
+        refresh_btn,
+        clear_area,
     ]
-    .spacing(theme::SPACING);
+    .spacing(theme::SPACING_SM)
+    .align_y(iced::Alignment::Center);
 
-    let mut content = column![header].spacing(theme::SPACING);
+    // --- Error row ---
+    let error_el: Element<'_, CacheMessage> = if let Some(err) = &state.error {
+        text(format!("Error: {err}"))
+            .size(12)
+            .color(theme::STATUS_RED)
+            .into()
+    } else {
+        iced::widget::Space::new(0, 0).into()
+    };
 
-    if let Some(err) = &state.error {
-        content = content.push(text(format!("Error: {err}")).size(13).color(theme::RED));
-    }
-
+    // --- File list ---
+    let mut file_list = column![].spacing(6);
     if let Some(ref summary) = state.summary {
-        let count_text = format!("{} file(s)", summary.entry_count);
-        content = content.push(text(count_text).size(13).color(theme::GREY));
-
-        let mut file_list = column![].spacing(4);
         for entry in &summary.entries {
-            let size = cache_scanner::format_size(entry.size_bytes);
-            let label = format!("{} ({})", entry.file_name, size);
+            let size_str = cache_scanner::format_size(entry.size_bytes);
             let entry_row = row![
-                text(label).size(13).width(Length::Fill),
-                button("Delete")
-                    .on_press(CacheMessage::DeleteEntry(entry.path.clone()))
-                    .style(button::danger),
+                column![
+                    text(entry.file_name.clone())
+                        .size(12)
+                        .color(theme::TEXT_PRIMARY),
+                    text(size_str)
+                        .size(10)
+                        .color(theme::TEXT_LABEL),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+                widget::danger_button(
+                    "Delete",
+                    Some(CacheMessage::DeleteEntry(entry.path.clone())),
+                ),
             ]
-            .spacing(8)
+            .spacing(theme::SPACING)
             .align_y(iced::Alignment::Center);
             file_list = file_list.push(widget::card(entry_row));
         }
-        content = content.push(scrollable(file_list).height(Length::Fill));
     }
 
-    content.into()
+    let inner = column![
+        header_row,
+        widget::section_divider(),
+        usage_card,
+        error_el,
+        scrollable(file_list).height(Length::Fill),
+    ]
+    .spacing(theme::SPACING_LG)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    container(inner)
+        .padding(iced::Padding {
+            top: 24.0,
+            right: 28.0,
+            bottom: 24.0,
+            left: 28.0,
+        })
+        .height(Length::Fill)
+        .into()
 }
