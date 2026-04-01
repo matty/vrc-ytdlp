@@ -155,7 +155,7 @@ pub fn update(state: &mut CacheTabState, msg: CacheMessage) -> Task<CacheMessage
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &CacheTabState) -> Element<CacheMessage> {
+pub fn view(state: &CacheTabState) -> Element<'_, CacheMessage> {
     let max_bytes = state.max_size_mb * 1024 * 1024;
     let total = state
         .summary

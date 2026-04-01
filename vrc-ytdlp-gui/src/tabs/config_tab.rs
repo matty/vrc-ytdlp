@@ -188,7 +188,7 @@ pub fn update(state: &mut ConfigTabState, msg: ConfigMessage) -> Option<ConfigAc
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &ConfigTabState) -> Element<ConfigMessage> {
+pub fn view(state: &ConfigTabState) -> Element<'_, ConfigMessage> {
     let browser_options: Vec<String> = BROWSERS.iter().map(|s| s.to_string()).collect();
     let selected_browser: Option<String> = Some(state.draft.cookies_browser.clone());
 

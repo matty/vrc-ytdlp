@@ -72,7 +72,6 @@ impl LogsTabState {
 pub enum LogsMessage {
     FilterChanged(String),
     ToggleAutoScroll(bool),
-    PollTick,
     Reload,
 }
 
@@ -84,7 +83,6 @@ pub fn update(state: &mut LogsTabState, msg: LogsMessage) {
     match msg {
         LogsMessage::FilterChanged(f) => state.filter = f,
         LogsMessage::ToggleAutoScroll(v) => state.auto_scroll = v,
-        LogsMessage::PollTick => state.poll(),
         LogsMessage::Reload => {
             state.lines.clear();
             state.init_tailer();
@@ -96,7 +94,7 @@ pub fn update(state: &mut LogsTabState, msg: LogsMessage) {
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &LogsTabState) -> Element<LogsMessage> {
+pub fn view(state: &LogsTabState) -> Element<'_, LogsMessage> {
     let toolbar = row![
         text_input("Filter...", &state.filter).on_input(LogsMessage::FilterChanged),
         widget::labeled_toggle("Auto-scroll", state.auto_scroll, LogsMessage::ToggleAutoScroll),

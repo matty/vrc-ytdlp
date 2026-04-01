@@ -1,8 +1,6 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-
-use anyhow::Result;
 
 // ---------------------------------------------------------------------------
 // LogLevel
@@ -85,23 +83,6 @@ pub fn find_latest_log(app_dir: &Path) -> Option<PathBuf>
 }
 
 // ---------------------------------------------------------------------------
-// read_log_file
-// ---------------------------------------------------------------------------
-
-/// Read an entire log file and return all lines parsed into `LogLine`s.
-pub fn read_log_file(path: &Path) -> Result<Vec<LogLine>>
-{
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let lines = reader
-        .lines()
-        .filter_map(|l| l.ok())
-        .map(|l| LogLine::from_str(&l))
-        .collect();
-    Ok(lines)
-}
-
-// ---------------------------------------------------------------------------
 // LogTailer
 // ---------------------------------------------------------------------------
 
@@ -113,16 +94,6 @@ pub struct LogTailer
 
 impl LogTailer
 {
-    /// Create a tailer starting at the **end** of the file (only future lines
-    /// will be returned).
-    pub fn new(path: PathBuf) -> Self
-    {
-        let position = File::open(&path)
-            .and_then(|mut f| f.seek(SeekFrom::End(0)))
-            .unwrap_or(0);
-        Self { path, position }
-    }
-
     /// Create a tailer starting at the **beginning** of the file.
     pub fn from_start(path: PathBuf) -> Self
     {

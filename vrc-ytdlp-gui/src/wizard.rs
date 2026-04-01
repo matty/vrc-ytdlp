@@ -44,7 +44,6 @@ pub struct WizardState {
     // Resolved paths
     pub ytdlp_path: PathBuf,
     pub ffmpeg_path: PathBuf,
-    pub ffprobe_path: PathBuf,
 }
 
 impl WizardState {
@@ -59,11 +58,10 @@ impl WizardState {
 
         let ytdlp_path = exe_dir.join(ytdlp_name);
         let ffmpeg_path = exe_dir.join(ffmpeg_name);
-        let ffprobe_path = exe_dir.join(ffprobe_name);
 
         let ytdlp_found = ytdlp_path.exists();
         let ffmpeg_found = ffmpeg_path.exists();
-        let ffprobe_found = ffprobe_path.exists();
+        let ffprobe_found = exe_dir.join(ffprobe_name).exists();
 
         Self {
             step: WizardStep::Welcome,
@@ -78,7 +76,6 @@ impl WizardState {
             cache_max_mb: "2048".into(),
             ytdlp_path,
             ffmpeg_path,
-            ffprobe_path,
         }
     }
 }
@@ -210,7 +207,7 @@ fn status_dot<'a>(found: bool, label: &'a str) -> Element<'a, WizardMessage> {
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &WizardState) -> Element<WizardMessage> {
+pub fn view(state: &WizardState) -> Element<'_, WizardMessage> {
     let content: Element<WizardMessage> = match state.step {
         WizardStep::Welcome => view_welcome(),
         WizardStep::Binaries => view_binaries(state),
@@ -239,7 +236,7 @@ fn view_welcome<'a>() -> Element<'a, WizardMessage> {
     .into()
 }
 
-fn view_binaries(state: &WizardState) -> Element<WizardMessage> {
+fn view_binaries(state: &WizardState) -> Element<'_, WizardMessage> {
     let mut col = column![
         text("Binary Detection").size(24),
         text("The following binaries are required:").size(14),
@@ -283,7 +280,7 @@ fn view_binaries(state: &WizardState) -> Element<WizardMessage> {
     col.into()
 }
 
-fn view_basic_config(state: &WizardState) -> Element<WizardMessage> {
+fn view_basic_config(state: &WizardState) -> Element<'_, WizardMessage> {
     let browser_options: Vec<String> = BROWSERS.iter().map(|s| s.to_string()).collect();
     let selected_browser: Option<String> = Some(state.cookies_browser.clone());
 
@@ -326,7 +323,7 @@ fn view_basic_config(state: &WizardState) -> Element<WizardMessage> {
     col.into()
 }
 
-fn view_done(_state: &WizardState) -> Element<WizardMessage> {
+fn view_done(_state: &WizardState) -> Element<'_, WizardMessage> {
     column![
         text("All Done!").size(28),
         text("Your configuration has been saved. Click \"Finish\" to start using VRC-YtDlp.").size(14),

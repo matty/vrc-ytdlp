@@ -45,7 +45,7 @@ pub enum DashboardMessage {
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &DashboardState) -> Element<DashboardMessage> {
+pub fn view(state: &DashboardState) -> Element<'_, DashboardMessage> {
     let server_card = {
         let dot_color = if state.server_running {
             theme::GREEN

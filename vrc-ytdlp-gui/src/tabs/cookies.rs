@@ -100,7 +100,7 @@ pub fn update(state: &mut CookiesTabState, msg: CookiesMessage) -> Task<CookiesM
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &CookiesTabState) -> Element<CookiesMessage> {
+pub fn view(state: &CookiesTabState) -> Element<'_, CookiesMessage> {
     let dot_color = if state.status.exists {
         theme::GREEN
     } else {

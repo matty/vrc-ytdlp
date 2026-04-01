@@ -9,8 +9,10 @@ pub struct CacheEntry {
     pub path: PathBuf,
     pub file_name: String,
     pub size_bytes: u64,
+    #[allow(dead_code)]
     pub created_secs: u64,
     pub last_accessed_secs: u64,
+    #[allow(dead_code)]
     pub url: Option<String>,
 }
 

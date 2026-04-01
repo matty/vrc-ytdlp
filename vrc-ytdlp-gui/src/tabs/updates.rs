@@ -125,7 +125,7 @@ pub fn update(state: &mut UpdatesTabState, msg: UpdatesMessage) -> Task<UpdatesM
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &UpdatesTabState) -> Element<UpdatesMessage> {
+pub fn view(state: &UpdatesTabState) -> Element<'_, UpdatesMessage> {
     let current = state
         .current_version
         .as_deref()

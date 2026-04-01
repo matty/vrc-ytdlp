@@ -20,6 +20,7 @@ use sidebar::Tab;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // variants are only constructed inside #[cfg(windows)] mod tray
 enum TrayEvent {
     ShowWindow,
     ToggleServer,
@@ -218,7 +219,6 @@ enum Message {
     TrayPollTick,
     Tray(TrayEvent),
 
-    Noop,
 }
 
 // ---------------------------------------------------------------------------
@@ -381,11 +381,10 @@ impl App {
                 }
             },
 
-            Message::Noop => Task::none(),
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         match &self.phase {
             Phase::Wizard(state) => wizard::view(state).map(Message::Wizard),
             Phase::Main => {

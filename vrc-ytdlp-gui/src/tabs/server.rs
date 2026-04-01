@@ -42,7 +42,6 @@ pub enum ServerMessage {
     Stop,
     StartResult(Result<u32, String>),
     StopResult(Result<(), String>),
-    HealthResult(bool),
 }
 
 // ---------------------------------------------------------------------------
@@ -106,13 +105,6 @@ pub fn update(state: &mut ServerTabState, msg: ServerMessage) -> Task<ServerMess
             }
             Task::none()
         }
-        ServerMessage::HealthResult(healthy) => {
-            state.running = healthy;
-            if healthy {
-                state.pid = server_manager::read_pid();
-            }
-            Task::none()
-        }
     }
 }
 
@@ -120,7 +112,7 @@ pub fn update(state: &mut ServerTabState, msg: ServerMessage) -> Task<ServerMess
 // View
 // ---------------------------------------------------------------------------
 
-pub fn view(state: &ServerTabState) -> Element<ServerMessage> {
+pub fn view(state: &ServerTabState) -> Element<'_, ServerMessage> {
     let dot_color = if state.running {
         theme::GREEN
     } else {
