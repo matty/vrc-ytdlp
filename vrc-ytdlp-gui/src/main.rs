@@ -1,5 +1,6 @@
 mod config;
 mod paths;
+mod services;
 mod sidebar;
 mod tabs;
 mod theme;
