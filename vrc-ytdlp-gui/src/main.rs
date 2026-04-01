@@ -8,7 +8,6 @@ mod widget;
 mod wizard;
 
 use std::path::PathBuf;
-use std::sync::{mpsc, OnceLock};
 use std::time::Duration;
 
 use iced::widget::{container, row};
@@ -17,7 +16,7 @@ use iced::{Element, Length, Subscription, Task, Theme};
 use sidebar::Tab;
 
 // ---------------------------------------------------------------------------
-// System tray
+// System tray (Windows only — requires libxdo on Linux which isn't portable)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -27,73 +26,84 @@ enum TrayEvent {
     Quit,
 }
 
-/// Global channel for tray menu events. Set up once on app start.
-static TRAY_RECEIVER: OnceLock<std::sync::Mutex<mpsc::Receiver<TrayEvent>>> = OnceLock::new();
+#[cfg(windows)]
+mod tray {
+    use super::TrayEvent;
+    use std::sync::{mpsc, OnceLock};
 
-fn setup_tray() -> Option<tray_icon::TrayIcon> {
-    use tray_icon::menu::{Menu, MenuItem};
-    use tray_icon::{Icon, TrayIconBuilder};
+    static TRAY_RECEIVER: OnceLock<std::sync::Mutex<mpsc::Receiver<TrayEvent>>> = OnceLock::new();
 
-    let menu = Menu::new();
-    let show_item = MenuItem::new("Show Window", true, None);
-    let server_item = MenuItem::new("Start/Stop Server", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
+    pub fn setup_tray() -> Option<tray_icon::TrayIcon> {
+        use tray_icon::menu::{Menu, MenuItem};
+        use tray_icon::{Icon, TrayIconBuilder};
 
-    let show_id = show_item.id().clone();
-    let server_id = server_item.id().clone();
-    let quit_id = quit_item.id().clone();
+        let menu = Menu::new();
+        let show_item = MenuItem::new("Show Window", true, None);
+        let server_item = MenuItem::new("Start/Stop Server", true, None);
+        let quit_item = MenuItem::new("Quit", true, None);
 
-    let _ = menu.append(&show_item);
-    let _ = menu.append(&server_item);
-    let _ = menu.append(&quit_item);
+        let show_id = show_item.id().clone();
+        let server_id = server_item.id().clone();
+        let quit_id = quit_item.id().clone();
 
-    // Create a simple 16x16 RGBA icon (solid accent color)
-    let icon_rgba = vec![0x5A, 0x8D, 0xF2, 0xFF].repeat(16 * 16);
-    let icon = match Icon::from_rgba(icon_rgba, 16, 16) {
-        Ok(i) => i,
-        Err(_) => return None,
-    };
+        let _ = menu.append(&show_item);
+        let _ = menu.append(&server_item);
+        let _ = menu.append(&quit_item);
 
-    let tray = TrayIconBuilder::new()
-        .with_tooltip("vrc-ytdlp")
-        .with_icon(icon)
-        .with_menu(Box::new(menu))
-        .build()
-        .ok()?;
+        let icon_rgba = vec![0x5A, 0x8D, 0xF2, 0xFF].repeat(16 * 16);
+        let icon = match Icon::from_rgba(icon_rgba, 16, 16) {
+            Ok(i) => i,
+            Err(_) => return None,
+        };
 
-    // Set up event forwarding through a channel
-    let (tx, rx) = mpsc::channel();
-    TRAY_RECEIVER.get_or_init(|| std::sync::Mutex::new(rx));
+        let tray = TrayIconBuilder::new()
+            .with_tooltip("vrc-ytdlp")
+            .with_icon(icon)
+            .with_menu(Box::new(menu))
+            .build()
+            .ok()?;
 
-    // Spawn a thread to forward tray_icon MenuEvent to our channel
-    std::thread::spawn(move || {
-        let menu_channel = tray_icon::menu::MenuEvent::receiver();
-        loop {
-            if let Ok(event) = menu_channel.recv() {
-                let tray_event = if event.id == show_id {
-                    TrayEvent::ShowWindow
-                } else if event.id == server_id {
-                    TrayEvent::ToggleServer
-                } else if event.id == quit_id {
-                    TrayEvent::Quit
-                } else {
-                    continue;
-                };
-                if tx.send(tray_event).is_err() {
-                    break;
+        let (tx, rx) = mpsc::channel();
+        TRAY_RECEIVER.get_or_init(|| std::sync::Mutex::new(rx));
+
+        std::thread::spawn(move || {
+            let menu_channel = tray_icon::menu::MenuEvent::receiver();
+            loop {
+                if let Ok(event) = menu_channel.recv() {
+                    let tray_event = if event.id == show_id {
+                        TrayEvent::ShowWindow
+                    } else if event.id == server_id {
+                        TrayEvent::ToggleServer
+                    } else if event.id == quit_id {
+                        TrayEvent::Quit
+                    } else {
+                        continue;
+                    };
+                    if tx.send(tray_event).is_err() {
+                        break;
+                    }
                 }
             }
-        }
-    });
+        });
 
-    Some(tray)
+        Some(tray)
+    }
+
+    pub fn poll_tray_events() -> Option<TrayEvent> {
+        TRAY_RECEIVER
+            .get()
+            .and_then(|mtx| mtx.lock().ok())
+            .and_then(|rx| rx.try_recv().ok())
+    }
 }
 
-fn poll_tray_events() -> Option<TrayEvent> {
-    TRAY_RECEIVER
-        .get()
-        .and_then(|mtx| mtx.lock().ok())
-        .and_then(|rx| rx.try_recv().ok())
+#[cfg(not(windows))]
+mod tray {
+    use super::TrayEvent;
+
+    pub fn setup_tray() -> Option<()> { None }
+
+    pub fn poll_tray_events() -> Option<TrayEvent> { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,8 +133,11 @@ struct App {
     updates_tab: tabs::updates::UpdatesTabState,
     cookies_tab: tabs::cookies::CookiesTabState,
 
-    // System tray (keep alive)
+    // System tray (keep alive — type varies by platform)
+    #[cfg(windows)]
     _tray: Option<tray_icon::TrayIcon>,
+    #[cfg(not(windows))]
+    _tray: Option<()>,
 }
 
 impl Default for App {
@@ -149,7 +162,7 @@ impl Default for App {
         let cache_dir = paths::resolve_path(&cfg.cache_dir)
             .unwrap_or_else(|_| PathBuf::from(&cfg.cache_dir));
 
-        let tray = setup_tray();
+        let tray = tray::setup_tray();
 
         Self {
             phase,
@@ -337,7 +350,7 @@ impl App {
 
             // ----- Tray poll subscription -----
             Message::TrayPollTick => {
-                if let Some(event) = poll_tray_events() {
+                if let Some(event) = tray::poll_tray_events() {
                     return self.update(Message::Tray(event));
                 }
                 Task::none()
