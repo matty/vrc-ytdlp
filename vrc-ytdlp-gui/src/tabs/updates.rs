@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use iced::widget::{button, column, row, text};
-use iced::{Element, Task};
+use iced::widget::{column, container, row, text};
+use iced::{Element, Length, Task};
 
 use crate::services::downloader;
 use crate::theme;
@@ -132,80 +132,142 @@ pub fn view(state: &UpdatesTabState) -> Element<'_, UpdatesMessage> {
         .unwrap_or("Not installed");
     let latest = state.latest_version.as_deref().unwrap_or("Unknown");
 
+    // --- yt-dlp card ---
     let ytdlp_dot = if state.current_version.is_some() {
-        widget::status_dot(theme::GREEN)
+        widget::status_dot(theme::STATUS_GREEN)
     } else {
-        widget::status_dot(theme::RED)
+        widget::status_dot(theme::STATUS_RED)
+    };
+
+    let version_badge: Element<'_, UpdatesMessage> = if state.update_available {
+        widget::pill_badge("Update available", theme::STATUS_YELLOW)
+    } else if state.current_version.is_some() {
+        widget::pill_badge("Current", theme::ACCENT)
+    } else {
+        widget::pill_badge("Not installed", theme::STATUS_RED)
     };
 
     let check_btn = if state.checking {
-        button("Checking...").style(button::secondary)
+        widget::secondary_button("Checking...", None)
     } else {
-        button("Check for Updates")
-            .on_press(UpdatesMessage::CheckForUpdate)
-            .style(button::primary)
+        widget::primary_button("Check for Updates", Some(UpdatesMessage::CheckForUpdate))
     };
 
     let download_btn = if state.downloading {
-        button("Downloading...").style(button::secondary)
+        widget::secondary_button("Downloading...", None)
     } else if state.update_available {
-        button("Download Update")
-            .on_press(UpdatesMessage::DownloadUpdate)
-            .style(button::primary)
+        widget::primary_button("Download Update", Some(UpdatesMessage::DownloadUpdate))
     } else {
-        button("Download Update").style(button::secondary)
+        widget::secondary_button("Download Update", None)
     };
 
-    let ytdlp_section = widget::card(
+    let ytdlp_card = widget::card(
         column![
-            row![ytdlp_dot, text("yt-dlp").size(16),]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            text(format!("Current: {current}"))
-                .size(14)
-                .color(theme::GREY),
-            text(format!("Latest:  {latest}"))
-                .size(14)
-                .color(theme::GREY),
-            row![check_btn, download_btn].spacing(theme::SPACING),
+            row![
+                ytdlp_dot,
+                text("yt-dlp").size(14).color(theme::TEXT_PRIMARY),
+                iced::widget::Space::new(Length::Fill, 0),
+                version_badge,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            row![
+                column![
+                    text("CURRENT VERSION")
+                        .size(9)
+                        .color(theme::TEXT_LABEL),
+                    text(current)
+                        .size(12)
+                        .color(theme::TEXT_PRIMARY),
+                ]
+                .spacing(2),
+                column![
+                    text("LATEST VERSION")
+                        .size(9)
+                        .color(theme::TEXT_LABEL),
+                    text(latest)
+                        .size(12)
+                        .color(theme::TEXT_PRIMARY),
+                ]
+                .spacing(2),
+            ]
+            .spacing(theme::SPACING_LG),
+            row![check_btn, download_btn]
+                .spacing(theme::SPACING_SM),
         ]
-        .spacing(8),
+        .spacing(theme::SPACING),
     );
 
-    // ffmpeg section
+    // --- ffmpeg card ---
     let ffmpeg_dot = if state.ffmpeg_exists {
-        widget::status_dot(theme::GREEN)
+        widget::status_dot(theme::STATUS_GREEN)
     } else {
-        widget::status_dot(theme::RED)
+        widget::status_dot(theme::STATUS_RED)
     };
-    let ffmpeg_status = if state.ffmpeg_exists {
-        "Installed"
+    let ffmpeg_badge: Element<'_, UpdatesMessage> = if state.ffmpeg_exists {
+        widget::pill_badge("Found", theme::STATUS_GREEN)
     } else {
-        "Not found"
+        widget::pill_badge("Not found", theme::STATUS_RED)
     };
-    let ffmpeg_section = widget::card(
+    let ffmpeg_path_str = state.ffmpeg_path.to_string_lossy().to_string();
+
+    let ffmpeg_card = widget::card(
         column![
-            row![ffmpeg_dot, text("ffmpeg").size(16),]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            text(ffmpeg_status).size(14).color(theme::GREY),
+            row![
+                ffmpeg_dot,
+                text("ffmpeg").size(14).color(theme::TEXT_PRIMARY),
+                iced::widget::Space::new(Length::Fill, 0),
+                ffmpeg_badge,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            column![
+                text("PATH").size(9).color(theme::TEXT_LABEL),
+                text(ffmpeg_path_str)
+                    .size(11)
+                    .color(theme::TEXT_SECONDARY)
+                    .font(iced::Font::MONOSPACE),
+            ]
+            .spacing(2),
         ]
-        .spacing(8),
+        .spacing(theme::SPACING),
     );
 
-    let mut content = column![
-        widget::section_header("Updates"),
-        ytdlp_section,
-        ffmpeg_section,
-    ]
-    .spacing(theme::SPACING);
-
+    // --- Feedback messages ---
+    let mut feedback_col = column![].spacing(4);
     if let Some(err) = &state.error {
-        content = content.push(text(format!("Error: {err}")).size(13).color(theme::RED));
+        feedback_col = feedback_col.push(
+            text(format!("Error: {err}"))
+                .size(12)
+                .color(theme::STATUS_RED),
+        );
     }
     if let Some(msg) = &state.success {
-        content = content.push(text(msg.clone()).size(13).color(theme::GREEN));
+        feedback_col = feedback_col.push(
+            text(msg.clone())
+                .size(12)
+                .color(theme::STATUS_GREEN),
+        );
     }
 
-    content.into()
+    let header_row = widget::page_header("Updates", "Manage binary versions");
+
+    let inner = column![
+        header_row,
+        widget::section_divider(),
+        ytdlp_card,
+        ffmpeg_card,
+        feedback_col,
+    ]
+    .spacing(theme::SPACING_LG)
+    .width(Length::Fill);
+
+    container(inner)
+        .padding(iced::Padding {
+            top: 24.0,
+            right: 28.0,
+            bottom: 24.0,
+            left: 28.0,
+        })
+        .into()
 }

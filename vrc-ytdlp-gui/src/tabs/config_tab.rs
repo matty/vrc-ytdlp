@@ -1,4 +1,4 @@
-use iced::widget::{button, column, pick_list, row, scrollable, text};
+use iced::widget::{column, container, pick_list, row, scrollable, text};
 use iced::{Element, Length};
 
 use crate::config::{self, Config, ValidationErrors};
@@ -192,8 +192,52 @@ pub fn view(state: &ConfigTabState) -> Element<'_, ConfigMessage> {
     let browser_options: Vec<String> = BROWSERS.iter().map(|s| s.to_string()).collect();
     let selected_browser: Option<String> = Some(state.draft.cookies_browser.clone());
 
+    // --- Header row with save/reset actions ---
+    let save_msg = if state.is_dirty() {
+        Some(ConfigMessage::Save)
+    } else {
+        None
+    };
+    let header_row = row![
+        widget::page_header(
+            "Configuration",
+            "Manage paths, server, cache, and connection settings",
+        ),
+        iced::widget::Space::new(Length::Fill, 0),
+        widget::secondary_button("Reset to Defaults", Some(ConfigMessage::ResetToDefaults)),
+        widget::secondary_button("Re-run Wizard", Some(ConfigMessage::RerunWizard)),
+        widget::primary_button("Save", save_msg),
+    ]
+    .spacing(theme::SPACING_SM)
+    .align_y(iced::Alignment::Center);
+
+    // --- Status / validation feedback ---
+    let mut status_col = column![].spacing(4);
+    for (field, msg) in &state.validation_errors {
+        status_col = status_col.push(
+            text(format!("{field}: {msg}"))
+                .size(12)
+                .color(theme::STATUS_RED),
+        );
+    }
+    if let Some(err) = &state.save_error {
+        status_col = status_col.push(
+            text(format!("Save error: {err}"))
+                .size(12)
+                .color(theme::STATUS_RED),
+        );
+    }
+    if state.save_success {
+        status_col = status_col.push(
+            text("Configuration saved.")
+                .size(12)
+                .color(theme::STATUS_GREEN),
+        );
+    }
+
+    // --- PATHS section ---
     let paths_section = column![
-        widget::section_header("Paths"),
+        widget::section_header("PATHS"),
         widget::labeled_input(
             "yt-dlp location",
             &state.draft.ytdlp_location,
@@ -213,33 +257,38 @@ pub fn view(state: &ConfigTabState) -> Element<'_, ConfigMessage> {
             ConfigMessage::PluginDirsChanged,
         ),
     ]
-    .spacing(8);
+    .spacing(theme::SPACING_SM);
 
+    // --- SERVER section (3-column grid) ---
     let server_section = column![
-        widget::section_header("Server"),
-        widget::labeled_input(
-            "Server port",
-            &state.draft.server_port.to_string(),
-            "9851",
-            ConfigMessage::ServerPortChanged,
-        ),
-        widget::labeled_input(
-            "Idle timeout (secs)",
-            &state.draft.server_idle_timeout_secs.to_string(),
-            "300",
-            ConfigMessage::IdleTimeoutChanged,
-        ),
-        widget::labeled_input(
-            "bgutil-pot port",
-            &state.draft.bgutil_pot_port.to_string(),
-            "4416",
-            ConfigMessage::BgutilPotPortChanged,
-        ),
+        widget::section_header("SERVER"),
+        row![
+            widget::labeled_input(
+                "Server port",
+                &state.draft.server_port.to_string(),
+                "9851",
+                ConfigMessage::ServerPortChanged,
+            ),
+            widget::labeled_input(
+                "Idle timeout (secs)",
+                &state.draft.server_idle_timeout_secs.to_string(),
+                "300",
+                ConfigMessage::IdleTimeoutChanged,
+            ),
+            widget::labeled_input(
+                "bgutil-pot port",
+                &state.draft.bgutil_pot_port.to_string(),
+                "4416",
+                ConfigMessage::BgutilPotPortChanged,
+            ),
+        ]
+        .spacing(theme::SPACING),
     ]
-    .spacing(8);
+    .spacing(theme::SPACING_SM);
 
+    // --- DOWNLOADS section ---
     let download_section = column![
-        widget::section_header("Downloads"),
+        widget::section_header("DOWNLOADS"),
         widget::labeled_input(
             "Execution timeout (secs)",
             &state.draft.execution_timeout_secs.to_string(),
@@ -265,50 +314,67 @@ pub fn view(state: &ConfigTabState) -> Element<'_, ConfigMessage> {
             ConfigMessage::ExtractorArgsChanged,
         ),
     ]
-    .spacing(8);
+    .spacing(theme::SPACING_SM);
+
+    // --- COOKIES section ---
+    let browser_label = column![
+        text("BROWSER FOR COOKIES".to_uppercase())
+            .size(10)
+            .color(theme::TEXT_LABEL),
+        widget::input_container(
+            pick_list(
+                browser_options,
+                selected_browser,
+                ConfigMessage::CookiesBrowserSelected,
+            )
+            .width(Length::Fill),
+        ),
+    ]
+    .spacing(5)
+    .width(Length::Fill);
 
     let cookies_section = column![
-        widget::section_header("Cookies"),
+        widget::section_header("COOKIES"),
         widget::labeled_toggle(
             "Enable cookies",
+            "Authenticate with browser cookies",
             state.draft.cookies,
             ConfigMessage::CookiesToggled,
         ),
-        text("Browser for cookies").size(14),
-        pick_list(
-            browser_options,
-            selected_browser,
-            ConfigMessage::CookiesBrowserSelected,
-        )
-        .width(160),
+        browser_label,
     ]
-    .spacing(8);
+    .spacing(theme::SPACING_SM);
 
+    // --- CACHE section (3-column grid) ---
     let cache_section = column![
-        widget::section_header("Cache"),
+        widget::section_header("CACHE"),
         widget::labeled_input(
             "Cache directory",
             &state.draft.cache_dir,
             "./cache",
             ConfigMessage::CacheDirChanged,
         ),
-        widget::labeled_input(
-            "Max cache size (MB)",
-            &state.draft.cache_max_size_mb.to_string(),
-            "2048",
-            ConfigMessage::CacheMaxMbChanged,
-        ),
-        widget::labeled_input(
-            "Cache TTL (secs)",
-            &state.draft.cache_ttl_secs.to_string(),
-            "86400",
-            ConfigMessage::CacheTtlChanged,
-        ),
+        row![
+            widget::labeled_input(
+                "Max cache size (MB)",
+                &state.draft.cache_max_size_mb.to_string(),
+                "2048",
+                ConfigMessage::CacheMaxMbChanged,
+            ),
+            widget::labeled_input(
+                "Cache TTL (secs)",
+                &state.draft.cache_ttl_secs.to_string(),
+                "86400",
+                ConfigMessage::CacheTtlChanged,
+            ),
+        ]
+        .spacing(theme::SPACING),
     ]
-    .spacing(8);
+    .spacing(theme::SPACING_SM);
 
+    // --- UPDATES section ---
     let update_section = column![
-        widget::section_header("Updates"),
+        widget::section_header("UPDATES"),
         widget::labeled_input(
             "Update check interval (days)",
             &state.draft.update_check_days.to_string(),
@@ -316,57 +382,35 @@ pub fn view(state: &ConfigTabState) -> Element<'_, ConfigMessage> {
             ConfigMessage::UpdateCheckDaysChanged,
         ),
     ]
-    .spacing(8);
+    .spacing(theme::SPACING_SM);
 
-    // Validation errors
-    let mut error_list = column![].spacing(4);
-    for (field, msg) in &state.validation_errors {
-        error_list =
-            error_list.push(text(format!("{field}: {msg}")).size(13).color(theme::RED));
-    }
-
-    // Status messages
-    let mut status_col = column![].spacing(4);
-    if let Some(err) = &state.save_error {
-        status_col =
-            status_col.push(text(format!("Save error: {err}")).size(13).color(theme::RED));
-    }
-    if state.save_success {
-        status_col =
-            status_col.push(text("Configuration saved.").size(13).color(theme::GREEN));
-    }
-
-    // Action buttons
-    let mut save_btn = button("Save").style(button::primary);
-    if state.is_dirty() {
-        save_btn = save_btn.on_press(ConfigMessage::Save);
-    }
-
-    let actions = row![
-        save_btn,
-        button("Reset to Defaults")
-            .on_press(ConfigMessage::ResetToDefaults)
-            .style(button::secondary),
-        button("Re-run Wizard")
-            .on_press(ConfigMessage::RerunWizard)
-            .style(button::secondary),
-    ]
-    .spacing(theme::SPACING);
-
-    let content = column![
-        widget::section_header("Configuration"),
-        paths_section,
-        server_section,
-        download_section,
-        cookies_section,
-        cache_section,
-        update_section,
-        error_list,
-        status_col,
-        actions,
-    ]
-    .spacing(theme::SPACING)
-    .width(Length::Fill);
+    // --- Assemble scrollable content ---
+    let content = container(
+        column![
+            header_row,
+            widget::section_divider(),
+            paths_section,
+            widget::section_divider(),
+            server_section,
+            widget::section_divider(),
+            download_section,
+            widget::section_divider(),
+            cookies_section,
+            widget::section_divider(),
+            cache_section,
+            widget::section_divider(),
+            update_section,
+            status_col,
+        ]
+        .spacing(theme::SPACING_LG)
+        .width(Length::Fill),
+    )
+    .padding(iced::Padding {
+        top: 24.0,
+        right: 28.0,
+        bottom: 24.0,
+        left: 28.0,
+    });
 
     scrollable(content).height(Length::Fill).into()
 }

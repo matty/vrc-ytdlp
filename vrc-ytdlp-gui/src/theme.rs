@@ -1,12 +1,45 @@
 use iced::Color;
 
-pub const GREEN: Color = Color::from_rgb(0.2, 0.8, 0.3);
-pub const RED: Color = Color::from_rgb(0.9, 0.2, 0.2);
-pub const YELLOW: Color = Color::from_rgb(0.9, 0.8, 0.2);
-pub const GREY: Color = Color::from_rgb(0.5, 0.5, 0.5);
-pub const SIDEBAR_BG: Color = Color::from_rgb(0.12, 0.12, 0.14);
-pub const CARD_BG: Color = Color::from_rgb(0.18, 0.18, 0.2);
+// -- Accent --
+pub const ACCENT: Color = Color::from_rgb(0.49, 0.81, 0.71); // #7dcfb6
+pub const ACCENT_DIM: Color = Color::from_rgb(0.36, 0.62, 0.54); // #5ba898
 
-pub const SPACING: u16 = 12;
+// -- Backgrounds --
+pub const BG_BASE: Color = Color::from_rgb(0.031, 0.031, 0.043); // #08080b
+pub const BG_SIDEBAR: Color = Color::from_rgb(0.047, 0.047, 0.063); // #0c0c10
+pub const BG_CARD: Color = Color::from_rgb(0.063, 0.063, 0.086); // #101016
+pub const BG_INPUT: Color = Color::from_rgb(0.055, 0.055, 0.078); // #0e0e14
+pub const BG_ELEVATED: Color = Color::from_rgb(0.067, 0.067, 0.082); // #111115
+
+// -- Borders --
+pub const BORDER_SUBTLE: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.04);
+pub const BORDER_INPUT: Color = Color::from_rgba(1.0, 1.0, 1.0, 0.06);
+
+// -- Text --
+pub const TEXT_PRIMARY: Color = Color::from_rgb(0.91, 0.91, 0.91); // #e8e8e8
+pub const TEXT_SECONDARY: Color = Color::from_rgb(0.33, 0.33, 0.33); // #555
+pub const TEXT_MUTED: Color = Color::from_rgb(0.23, 0.23, 0.26); // #3a3a42
+pub const TEXT_LABEL: Color = Color::from_rgb(0.53, 0.53, 0.53); // #888
+pub const TEXT_SECTION: Color = Color::from_rgb(0.40, 0.40, 0.40); // #666
+
+// -- Status --
+pub const STATUS_GREEN: Color = Color::from_rgb(0.29, 0.87, 0.50); // #4ade80
+pub const STATUS_RED: Color = Color::from_rgb(0.94, 0.27, 0.27); // #ef4444
+pub const STATUS_YELLOW: Color = Color::from_rgb(0.98, 0.80, 0.08); // #facc15
+
+// -- Layout --
+pub const SPACING_SM: u16 = 8;
+pub const SPACING: u16 = 10;
+pub const SPACING_LG: u16 = 16;
 pub const PADDING: u16 = 16;
-pub const SIDEBAR_WIDTH: u16 = 180;
+pub const PADDING_LG: u16 = 28;
+pub const SIDEBAR_WIDTH: u16 = 190;
+pub const CARD_RADIUS: f32 = 10.0;
+pub const INPUT_RADIUS: f32 = 6.0;
+
+// -- Aliases for existing code --
+pub const GREEN: Color = STATUS_GREEN;
+pub const RED: Color = STATUS_RED;
+pub const YELLOW: Color = STATUS_YELLOW;
+pub const GREY: Color = TEXT_SECONDARY;
+pub const SIDEBAR_BG: Color = BG_SIDEBAR;

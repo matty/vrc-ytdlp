@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use iced::widget::{button, column, pick_list, row, text};
-use iced::{Element, Task};
+use iced::widget::{column, container, pick_list, row, text};
+use iced::{Element, Length, Task};
 
 use crate::services::cookie_extractor::{self, CookieStatus, BROWSERS};
 use crate::theme;
@@ -102,74 +102,123 @@ pub fn update(state: &mut CookiesTabState, msg: CookiesMessage) -> Task<CookiesM
 
 pub fn view(state: &CookiesTabState) -> Element<'_, CookiesMessage> {
     let dot_color = if state.status.exists {
-        theme::GREEN
+        theme::STATUS_GREEN
     } else {
-        theme::YELLOW
+        theme::STATUS_YELLOW
     };
     let status_text = if state.status.exists {
         "cookies.txt found"
     } else {
         "No cookies.txt"
     };
-
     let age_text = state
         .status
         .age_description
         .as_deref()
         .unwrap_or("N/A");
 
-    let browser_options: Vec<String> = BROWSERS.iter().map(|s| s.to_string()).collect();
-    let selected: Option<String> = Some(state.browser.clone());
-
-    let extract_btn = if state.extracting {
-        button("Extracting...").style(button::secondary)
+    // --- Status card ---
+    let status_badge: Element<'_, CookiesMessage> = if state.status.exists {
+        widget::pill_badge("Found", theme::STATUS_GREEN)
     } else {
-        button("Extract Cookies")
-            .on_press(CookiesMessage::Extract)
-            .style(button::primary)
+        widget::pill_badge("Not found", theme::STATUS_YELLOW)
     };
 
     let status_card = widget::card(
         column![
-            row![widget::status_dot(dot_color), text(status_text).size(16),]
-                .spacing(8)
-                .align_y(iced::Alignment::Center),
-            text(format!("Last modified: {age_text}"))
-                .size(14)
-                .color(theme::GREY),
+            row![
+                widget::status_dot(dot_color),
+                text(status_text)
+                    .size(13)
+                    .color(theme::TEXT_PRIMARY),
+                iced::widget::Space::new(Length::Fill, 0),
+                status_badge,
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            column![
+                text("LAST MODIFIED").size(9).color(theme::TEXT_LABEL),
+                text(age_text).size(12).color(theme::TEXT_SECONDARY),
+            ]
+            .spacing(2),
         ]
-        .spacing(8),
+        .spacing(theme::SPACING),
     );
+
+    // --- Extract section ---
+    let browser_options: Vec<String> = BROWSERS.iter().map(|s| s.to_string()).collect();
+    let selected: Option<String> = Some(state.browser.clone());
+
+    let extract_btn = if state.extracting {
+        widget::primary_button("Extracting...", None)
+    } else {
+        widget::primary_button("Extract Cookies", Some(CookiesMessage::Extract))
+    };
+
+    let browser_picker = column![
+        text("BROWSER").size(9).color(theme::TEXT_LABEL),
+        widget::input_container(
+            pick_list(browser_options, selected, CookiesMessage::BrowserSelected)
+                .width(Length::Fill),
+        ),
+    ]
+    .spacing(5)
+    .width(160);
 
     let extract_card = widget::card(
         column![
-            text("Extract cookies from browser").size(14),
-            row![
-                pick_list(browser_options, selected, CookiesMessage::BrowserSelected).width(160),
-                extract_btn,
-            ]
-            .spacing(theme::SPACING)
-            .align_y(iced::Alignment::Center),
+            text("Extract cookies from browser")
+                .size(13)
+                .color(theme::TEXT_PRIMARY),
+            row![browser_picker, extract_btn]
+                .spacing(theme::SPACING)
+                .align_y(iced::Alignment::End),
         ]
-        .spacing(8),
+        .spacing(theme::SPACING),
     );
 
-    let mut content = column![
-        widget::section_header("Cookies"),
-        status_card,
-        extract_card,
-        button("Refresh Status")
-            .on_press(CookiesMessage::Refresh)
-            .style(button::secondary),
-    ]
-    .spacing(theme::SPACING);
-
+    // --- Feedback ---
+    let mut feedback_col = column![].spacing(4);
     if let Some(err) = &state.error {
-        content = content.push(text(format!("Error: {err}")).size(13).color(theme::RED));
+        feedback_col = feedback_col.push(
+            text(format!("Error: {err}"))
+                .size(12)
+                .color(theme::STATUS_RED),
+        );
     }
     if let Some(msg) = &state.success {
-        content = content.push(text(msg.clone()).size(13).color(theme::GREEN));
+        feedback_col = feedback_col.push(
+            text(msg.clone())
+                .size(12)
+                .color(theme::STATUS_GREEN),
+        );
     }
 
-    content.into()
+    // --- Header row ---
+    let header_row = row![
+        widget::page_header("Cookies", "Manage browser cookie authentication"),
+        iced::widget::Space::new(Length::Fill, 0),
+        widget::secondary_button("Refresh Status", Some(CookiesMessage::Refresh)),
+    ]
+    .spacing(theme::SPACING_SM)
+    .align_y(iced::Alignment::Center);
+
+    let inner = column![
+        header_row,
+        widget::section_divider(),
+        status_card,
+        extract_card,
+        feedback_col,
+    ]
+    .spacing(theme::SPACING_LG)
+    .width(Length::Fill);
+
+    container(inner)
+        .padding(iced::Padding {
+            top: 24.0,
+            right: 28.0,
+            bottom: 24.0,
+            left: 28.0,
+        })
+        .into()
 }
