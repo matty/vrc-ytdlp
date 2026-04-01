@@ -501,7 +501,7 @@ impl App {
 fn main() -> iced::Result {
     iced::application("vrc-ytdlp", App::update, App::view)
         .subscription(App::subscription)
-        .theme(|_| Theme::Dark)
+        .theme(|_| theme::app_theme())
         .window_size((900.0, 600.0))
         .run()
 }

@@ -1,4 +1,20 @@
-use iced::Color;
+use iced::color;
+use iced::theme::Palette;
+use iced::{Color, Theme};
+
+/// Build our custom dark theme with teal accent.
+pub fn app_theme() -> Theme {
+    Theme::custom(
+        "vrc-ytdlp".to_string(),
+        Palette {
+            background: color!(0x08080b),
+            text: color!(0xe8e8e8),
+            primary: color!(0x7dcfb6),
+            success: color!(0x4ade80),
+            danger: color!(0xef4444),
+        },
+    )
+}
 
 // -- Accent --
 pub const ACCENT: Color = Color::from_rgb(0.49, 0.81, 0.71); // #7dcfb6
@@ -37,7 +53,7 @@ pub const SIDEBAR_WIDTH: u16 = 190;
 pub const CARD_RADIUS: f32 = 10.0;
 pub const INPUT_RADIUS: f32 = 6.0;
 
-// -- Aliases for existing code --
+// -- Aliases --
 pub const GREEN: Color = STATUS_GREEN;
 pub const RED: Color = STATUS_RED;
 pub const YELLOW: Color = STATUS_YELLOW;
