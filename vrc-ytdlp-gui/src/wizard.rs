@@ -48,7 +48,7 @@ pub struct WizardState {
 
 impl WizardState {
     pub fn new() -> Self {
-        let exe_dir = paths::exe_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let exe_dir = paths::app_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let (ytdlp_name, ffmpeg_name, ffprobe_name) = if cfg!(windows) {
             ("yt-dlp.exe", "ffmpeg.exe", "ffprobe.exe")

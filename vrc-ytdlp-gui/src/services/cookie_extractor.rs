@@ -31,7 +31,7 @@ pub fn check_cookies(app_dir: &Path) -> CookieStatus {
 }
 
 pub async fn extract_cookies(ytdlp_path: &Path, browser: &str) -> Result<String> {
-    let app_dir = paths::exe_dir()?;
+    let app_dir = paths::app_dir()?;
     let cookie_path = app_dir.join("cookies.txt");
     let output = tokio::process::Command::new(ytdlp_path)
         .args(["--cookies-from-browser", browser, "--cookies", &cookie_path.to_string_lossy(), "--version"])

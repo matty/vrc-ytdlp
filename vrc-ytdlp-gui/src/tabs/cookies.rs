@@ -22,7 +22,7 @@ pub struct CookiesTabState {
 
 impl CookiesTabState {
     pub fn new(browser: String, ytdlp_path: PathBuf) -> Self {
-        let app_dir = crate::paths::exe_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let app_dir = crate::paths::app_dir().unwrap_or_else(|_| PathBuf::from("."));
         let status = cookie_extractor::check_cookies(&app_dir);
         Self {
             status,
@@ -79,7 +79,7 @@ pub fn update(state: &mut CookiesTabState, msg: CookiesMessage) -> Task<CookiesM
                     state.success = Some(msg);
                     // Refresh status
                     let app_dir =
-                        crate::paths::exe_dir().unwrap_or_else(|_| PathBuf::from("."));
+                        crate::paths::app_dir().unwrap_or_else(|_| PathBuf::from("."));
                     state.status = cookie_extractor::check_cookies(&app_dir);
                 }
                 Err(e) => state.error = Some(e),
@@ -87,7 +87,7 @@ pub fn update(state: &mut CookiesTabState, msg: CookiesMessage) -> Task<CookiesM
             Task::none()
         }
         CookiesMessage::Refresh => {
-            let app_dir = crate::paths::exe_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let app_dir = crate::paths::app_dir().unwrap_or_else(|_| PathBuf::from("."));
             state.status = cookie_extractor::check_cookies(&app_dir);
             state.error = None;
             state.success = None;

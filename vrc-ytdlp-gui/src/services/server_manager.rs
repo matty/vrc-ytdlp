@@ -19,7 +19,7 @@ pub async fn check_health(port: u16) -> bool {
 }
 
 pub fn start_server(port: u16, idle_timeout: u64) -> Result<u32> {
-    let app_dir = paths::exe_dir()?;
+    let app_dir = paths::app_dir()?;
     let exe_name = if cfg!(windows) { "vrc-ytdlp.exe" } else { "vrc-ytdlp" };
     let exe_path = app_dir.join(exe_name);
 

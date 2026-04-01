@@ -31,7 +31,7 @@ impl LogsTabState {
     /// Initialise the tailer from the app directory. Called when the Logs tab
     /// becomes active or on reload.
     pub fn init_tailer(&mut self) {
-        let app_dir = match crate::paths::exe_dir() {
+        let app_dir = match crate::paths::app_dir() {
             Ok(d) => d,
             Err(e) => {
                 self.error = Some(e.to_string());
