@@ -27,41 +27,65 @@ pub struct PipelineHandle {
 
 impl PipelineHandle {
     /// Spawn a background task that waits for processes to finish and cleans up.
-    /// Returns the ffmpeg stdout for streaming to the client.
-    pub fn into_monitored(mut self, stream_id: String) -> tokio::process::ChildStdout {
-        let stdout = self.ffmpeg_stdout;
+    /// Returns the ffmpeg stdout for streaming to the client. `on_exit` is
+    /// called exactly once with `true` only if every pipeline process exited
+    /// successfully — partial output from a failed process must not be cached.
+    pub fn into_monitored(
+        self,
+        stream_id: String,
+        on_exit: impl FnOnce(bool) + Send + 'static,
+    ) -> tokio::process::ChildStdout {
+        let PipelineHandle {
+            ffmpeg_stdout,
+            mut ytdlp_child,
+            mut ffmpeg_child,
+            temp_file,
+        } = self;
 
         tokio::spawn(async move {
-            match self.ffmpeg_child.wait().await {
+            let ffmpeg_ok = match ffmpeg_child.wait().await {
                 Ok(status) if status.success() => {
                     tracing::info!(id = %stream_id, "ffmpeg completed successfully");
+                    true
                 }
                 Ok(status) => {
                     tracing::warn!(id = %stream_id, status = %status, "ffmpeg exited with error");
+                    false
                 }
-                Err(e) => tracing::error!(id = %stream_id, error = %e, "ffmpeg wait failed"),
-            }
+                Err(e) => {
+                    tracing::error!(id = %stream_id, error = %e, "ffmpeg wait failed");
+                    false
+                }
+            };
 
-            if let Some(mut ytdlp) = self.ytdlp_child.take() {
-                match ytdlp.wait().await {
-                    Ok(status) if !status.success() => {
+            let ytdlp_ok = match ytdlp_child.take() {
+                Some(mut ytdlp) => match ytdlp.wait().await {
+                    Ok(status) if status.success() => true,
+                    Ok(status) => {
                         tracing::warn!(id = %stream_id, status = %status, "yt-dlp exited with error");
+                        false
                     }
-                    Err(e) => tracing::error!(id = %stream_id, error = %e, "yt-dlp wait failed"),
-                    _ => {}
-                }
-            }
+                    Err(e) => {
+                        tracing::error!(id = %stream_id, error = %e, "yt-dlp wait failed");
+                        false
+                    }
+                },
+                // Temp file strategy: yt-dlp already completed and was checked.
+                None => true,
+            };
 
-            if let Some(path) = self.temp_file.take() {
+            if let Some(path) = temp_file {
                 if let Err(e) = std::fs::remove_file(&path) {
                     tracing::debug!(id = %stream_id, error = %e, path = %path.display(), "failed to remove temp file");
                 } else {
                     tracing::debug!(id = %stream_id, path = %path.display(), "cleaned up temp file");
                 }
             }
+
+            on_exit(ffmpeg_ok && ytdlp_ok);
         });
 
-        stdout
+        ffmpeg_stdout
     }
 }
 
@@ -125,10 +149,7 @@ async fn spawn_pipe_pipeline(
         tokio::spawn(log_stderr("yt-dlp", id, stderr));
     }
 
-    let ytdlp_stdout = ytdlp_child
-        .stdout
-        .take()
-        .context("no stdout from yt-dlp")?;
+    let ytdlp_stdout = ytdlp_child.stdout.take().context("no stdout from yt-dlp")?;
 
     // Convert tokio ChildStdout → Stdio for ffmpeg stdin
     let stdin: Stdio = ytdlp_stdout
@@ -197,9 +218,7 @@ async fn spawn_tempfile_pipeline(
         log_ytdlp_stderr(stream_id, &stderr_text);
 
         if output.status.success() && temp_file.exists() {
-            let file_size = std::fs::metadata(&temp_file)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(&temp_file).map(|m| m.len()).unwrap_or(0);
 
             if file_size > 0 {
                 tracing::info!(
@@ -213,8 +232,7 @@ async fn spawn_tempfile_pipeline(
 
         last_error = stderr_text
             .lines()
-            .filter(|l| l.contains("ERROR"))
-            .last()
+            .rfind(|l| l.contains("ERROR"))
             .unwrap_or("unknown error")
             .to_string();
 
@@ -235,9 +253,7 @@ async fn spawn_tempfile_pipeline(
         bail!("yt-dlp download failed after {max_retries} attempts: {last_error}");
     }
 
-    let file_size = std::fs::metadata(&temp_file)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(&temp_file).map(|m| m.len()).unwrap_or(0);
     tracing::info!(id = %stream_id, size = file_size, "download complete, starting ffmpeg remux");
 
     let (needs_transcode_video, needs_transcode_audio) =
@@ -269,23 +285,18 @@ async fn spawn_tempfile_pipeline(
 // ---------------------------------------------------------------------------
 
 /// Spawn ffmpeg reading from a pipe — for the streaming strategy.
-fn spawn_ffmpeg_pipe(
-    ffmpeg_path: &Path,
-    stdin: Stdio,
-    stream_id: &str,
-) -> Result<Child> {
+fn spawn_ffmpeg_pipe(ffmpeg_path: &Path, stdin: Stdio, stream_id: &str) -> Result<Child> {
     let mut cmd = Command::new(ffmpeg_path);
     cmd.args(["-hide_banner", "-loglevel", "warning"]);
     cmd.args(["-probesize", "10M", "-analyzeduration", "10M"]);
     cmd.args(["-i", "pipe:0"]);
     cmd.args(["-c", "copy"]);
     cmd.args(["-bsf:a", "aac_adtstoasc"]);
-    cmd.args([
-        "-movflags",
-        "+frag_keyframe+empty_moov+default_base_moof",
-    ]);
+    cmd.args(["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]);
     cmd.args(["-f", "mp4", "pipe:1"]);
-    cmd.stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(windows)]
     apply_no_window(&mut cmd);
@@ -325,10 +336,7 @@ fn spawn_ffmpeg_file(
     }
 
     cmd.args(["-bsf:a", "aac_adtstoasc"]);
-    cmd.args([
-        "-movflags",
-        "+frag_keyframe+empty_moov+default_base_moof",
-    ]);
+    cmd.args(["-movflags", "+frag_keyframe+empty_moov+default_base_moof"]);
     cmd.args(["-f", "mp4", "pipe:1"]);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -491,16 +499,16 @@ async fn probe_codecs(ffmpeg_path: &Path, file: &Path) -> (bool, bool) {
 
     let mut cmd = Command::new(&ffprobe_path);
     cmd.args([
-            "-v",
-            "quiet",
-            "-show_entries",
-            "stream=codec_name,codec_type",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(file)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        "-v",
+        "quiet",
+        "-show_entries",
+        "stream=codec_name,codec_type",
+        "-of",
+        "csv=p=0",
+    ])
+    .arg(file)
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
 
     #[cfg(windows)]
     apply_no_window(&mut cmd);
@@ -580,7 +588,9 @@ fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &std::ffi::OsSt
     let tmp_dir = work_dir.join("tmp");
     match std::fs::create_dir_all(&tmp_dir) {
         Ok(_) => tracing::debug!(path = %tmp_dir.display(), "created temp dir for yt-dlp"),
-        Err(e) => tracing::error!(path = %tmp_dir.display(), error = %e, "failed to create temp dir"),
+        Err(e) => {
+            tracing::error!(path = %tmp_dir.display(), error = %e, "failed to create temp dir")
+        }
     }
 
     cmd.current_dir(work_dir)
@@ -592,7 +602,6 @@ fn apply_ytdlp_env(cmd: &mut Command, work_dir: &Path, path_env: &std::ffi::OsSt
 /// Apply CREATE_NO_WINDOW on Windows for ffmpeg/ffprobe processes.
 #[cfg(windows)]
 fn apply_no_window(cmd: &mut Command) {
-    use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }

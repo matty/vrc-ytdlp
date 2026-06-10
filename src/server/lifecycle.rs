@@ -62,7 +62,12 @@ pub async fn run_managed_server(
     if let (Some(ref mut pot), Some(ref path)) = (&mut bgutil, &bgutil_pot_path) {
         let token = shutdown.clone();
         let child_id = pot.take_child();
-        tokio::spawn(monitor_bgutil_pot(child_id, path.clone(), bgutil_pot_port, token));
+        tokio::spawn(monitor_bgutil_pot(
+            child_id,
+            path.clone(),
+            bgutil_pot_port,
+            token,
+        ));
     }
 
     // 3. Signal handler: SIGTERM/SIGINT → cancel token
@@ -99,7 +104,7 @@ pub async fn run_managed_server(
     // Give bgutil-pot a moment to die, then force-kill
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    Ok(result.unwrap_or(()))
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +140,6 @@ async fn spawn_bgutil_pot(path: &Path, host: &str, port: u16) -> Result<Child> {
     // On Windows, prevent a console window from appearing
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }

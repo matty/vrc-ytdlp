@@ -1,3 +1,5 @@
 /target
-.ideavrc-ytdlp-gui/target/
+.idea/
 .superpowers/
+.claude/settings.local.json
+vrc-ytdlp-gui/target/

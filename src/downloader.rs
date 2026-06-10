@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::Config;
+use crate::config::Config;
 
 const GITHUB_API_URL: &str = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
 // Use yt-dlp_x86.exe on Windows (py2exe, no PyInstaller temp dir issues)

@@ -51,7 +51,9 @@ fn wait_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Resu
             }
             None => {
                 if start.elapsed() >= timeout {
-                    tracing::warn!("yt-dlp timed out, terminating");
+                    tracing::warn!("yt-dlp timed out, killing process");
+                    let _ = child.kill();
+                    let _ = child.wait();
                     bail!("yt-dlp timed out after {}s", timeout.as_secs());
                 }
                 sleep(Duration::from_millis(200));
@@ -65,7 +67,6 @@ pub fn run_ytdlp(exe_path: &Path, args: &[String], timeout: Duration) -> Result<
     let _job = JobObject::attach(&child).context("creating job object for yt-dlp")?;
     wait_with_timeout(&mut child, timeout)
 }
-
 
 // --- Windows Job Object RAII wrapper ---
 
