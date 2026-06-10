@@ -254,7 +254,6 @@ async fn spawn_tempfile_pipeline(
     }
 
     let file_size = std::fs::metadata(&temp_file).map(|m| m.len()).unwrap_or(0);
-    tracing::info!(id = %stream_id, size = file_size, "download complete, starting ffmpeg remux");
 
     let (needs_transcode_video, needs_transcode_audio) =
         probe_codecs(&config.ffmpeg_path, &temp_file).await;
