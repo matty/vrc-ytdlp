@@ -5,25 +5,25 @@ description: Build and launch the vrc-ytdlp backend in --serve mode locally and 
 
 # Run the backend server
 
-This launches the `vrc-ytdlp` backend binary (`src/`) in HTTP server mode.
+This launches the `vrc-ytdlp` backend binary (`crates/vrc-ytdlp/`) in HTTP server mode.
 
 ## Steps
 
 1. From the repo root, build first so errors surface clearly:
    ```bash
-   cargo build
+   cargo build -p vrc-ytdlp
    ```
-2. Confirm `config.json` exists at the repo root (the server reads it for yt-dlp/ffmpeg paths, `allowed_args`, timeouts). If a `--serve` flag for port/timeout is needed, check `src/main.rs` for the current flags — don't assume.
+2. Confirm `config.json` exists at the repo root (the server reads it for yt-dlp/ffmpeg paths, `allowed_args`, timeouts). If a `--serve` flag for port/timeout is needed, check `crates/vrc-ytdlp/src/main.rs` for the current flags — don't assume.
 3. Launch the server in the background so the shell stays free:
    ```bash
-   cargo run -- --serve
+   cargo run -p vrc-ytdlp -- --serve
    ```
 4. Verify it's up by hitting the health endpoint:
    ```bash
    curl http://localhost:<port>/health
    ```
-   The default port comes from `src/server.rs`/`main.rs` — read it rather than guessing.
-5. Report the resolved port, health response, and any startup log lines. To test a specific endpoint, inspect the route definitions in `src/server.rs` for the exact path and expected payload.
+   The default port comes from `crates/vrc-ytdlp/src/server/mod.rs` — read it rather than guessing.
+5. Report the resolved port, health response, and any startup log lines. To test a specific endpoint, inspect the route definitions in `crates/vrc-ytdlp/src/server/mod.rs` for the exact path and expected payload.
 
 ## Notes
 
