@@ -38,4 +38,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build binaries in "${{ matrix.BUILD_TARGET }}" mode
-        run: cargo build --profile ${{ matrix.BUILD_TARGET }}
+        # Backend only: the Tauri manager crate needs GTK/WebKit system libs
+        # this Ubuntu job doesn't install; it gets its own workflow later.
+        run: cargo build --profile ${{ matrix.BUILD_TARGET }} -p vrc-ytdlp
