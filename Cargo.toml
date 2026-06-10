@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
-members = ["crates/vrc-ytdlp"]
+members = ["crates/vrc-ytdlp", "apps/desktop/src-tauri"]
 exclude = ["vrc-ytdlp-gui"]
