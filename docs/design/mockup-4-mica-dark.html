@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>vrc-ytdlp Manager — Mica Dark</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cascadia+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  /* Win11 Mica dark — layered neutral grays, system-blue accent */
+  --bg: #1c1c1c;
+  --bg-window: #202020;
+  --bg-sidebar: #1d1d1d;
+  --bg-card: #2b2b2b;
+  --bg-card-hover: #323232;
+  --bg-inset: #191919;
+  --border: rgba(255,255,255,0.07);
+  --border-strong: rgba(255,255,255,0.12);
+  --accent: #60cdff;        /* Win11 dark default accent */
+  --accent-dim: #4ca8d4;
+  --accent-glow: rgba(96,205,255,0.14);
+  --text: #ffffff;
+  --text-2: #c8c8c8;
+  --text-3: #8a8a8a;
+  --ok: #6ccb5f;
+  --warn: #fce100;
+  --err: #ff99a4;
+  --radius: 8px;            /* Win11 corner radius */
+  --radius-sm: 5px;
+  --font: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Code", Consolas, monospace;
+  --caption-h: 32px;
+  --statusbar-h: 26px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font);
+  /* Mica: faint wallpaper-tinted wash bleeding through the window */
+  background:
+    radial-gradient(1100px 500px at 12% -8%, rgba(96,205,255,0.10), transparent 60%),
+    radial-gradient(900px 600px at 105% 115%, rgba(140,120,220,0.10), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+.window {
+  height: 100vh; display: flex; flex-direction: column;
+  background: linear-gradient(var(--bg-window), var(--bg-window));
+  background-color: rgba(32,32,32,0.72);   /* translucency over the Mica wash */
+}
+/* ---------- title bar (caption) ---------- */
+.caption {
+  height: var(--caption-h); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  -webkit-app-region: drag; user-select: none;
+}
+.caption-title { display: flex; align-items: center; gap: 9px; padding-left: 13px; }
+.caption-title .ico {
+  width: 16px; height: 16px; border-radius: 4px;
+  background: linear-gradient(135deg, var(--accent), #3f8fd0);
+  display: grid; place-items: center;
+}
+.caption-title .ico svg { width: 8px; height: 8px; fill: #06121b; }
+.caption-title span { font-size: 12px; color: var(--text-2); font-weight: 400; }
+.caption-buttons { display: flex; height: 100%; -webkit-app-region: no-drag; }
+.cap-btn {
+  width: 46px; height: 100%; display: grid; place-items: center;
+  cursor: default; transition: background .12s ease;
+}
+.cap-btn svg { width: 10px; height: 10px; stroke: var(--text-2); stroke-width: 1; fill: none; }
+.cap-btn:hover { background: rgba(255,255,255,0.06); }
+.cap-btn.close:hover { background: #c42b1c; }
+.cap-btn.close:hover svg { stroke: #fff; }
+/* ---------- body row: sidebar + main ---------- */
+.body { flex: 1; display: flex; overflow: hidden; }
+/* ---------- sidebar ---------- */
+.sidebar {
+  width: 208px; flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  padding: 8px 8px 12px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 8px 10px 14px; }
+.brand-mark {
+  width: 30px; height: 30px; border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent), #3f8fd0);
+  display: grid; place-items: center;
+}
+.brand-mark svg { width: 13px; height: 13px; fill: #06121b; }
+.brand-name { font-weight: 600; font-size: 13.5px; letter-spacing: -0.005em; }
+.brand-name span { display: block; font-weight: 400; font-size: 10px; color: var(--text-3); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 1px; }
+.nav { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+.nav-label { font-size: 11px; color: var(--text-3); padding: 14px 12px 6px; }
+.nav a {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 11px; border-radius: var(--radius-sm);
+  color: var(--text-2); text-decoration: none; font-weight: 400;
+  position: relative; transition: background .12s ease;
+}
+.nav a svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.nav a:hover { color: var(--text); background: rgba(255,255,255,0.045); }
+.nav a.active { color: var(--text); background: rgba(255,255,255,0.06); }
+.nav a.active::before {
+  content: ""; position: absolute; left: 2px; top: 9px; bottom: 9px; width: 3px;
+  border-radius: 3px; background: var(--accent);
+}
+.nav .badge {
+  margin-left: auto; font-family: var(--mono); font-size: 10px;
+  background: var(--accent); color: #06121b; padding: 1px 6px; border-radius: 10px; font-weight: 500;
+}
+/* ---------- main ---------- */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 26px 0;
+}
+h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.subtitle { color: var(--text-2); margin-top: 3px; font-size: 12.5px; }
+.btn {
+  font-family: var(--font); font-size: 12.5px; font-weight: 500;
+  border: none; cursor: default; border-radius: var(--radius-sm);
+  padding: 8px 16px; transition: all .12s ease;
+}
+.btn-primary { background: var(--accent); color: #06121b; }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-ghost { background: rgba(255,255,255,0.04); color: var(--text); border: 1px solid var(--border-strong); }
+.btn-ghost:hover { background: rgba(255,255,255,0.08); }
+.content { padding: 20px 26px 26px; overflow-y: auto; }
+/* ---------- cards ---------- */
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+.card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 17px;
+  transition: all .13s ease; cursor: default; position: relative;
+}
+.card:hover { background: var(--bg-card-hover); border-color: var(--border-strong); }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 13px; }
+.card-title { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); font-weight: 500; }
+.card-title svg { width: 15px; height: 15px; stroke: var(--accent); fill: none; stroke-width: 1.6; stroke-linecap: round; }
+.pill { font-size: 11px; font-weight: 500; padding: 2px 9px; border-radius: 4px; }
+.pill-ok { background: rgba(108,203,95,0.15); color: var(--ok); }
+.pill-warn { background: rgba(252,225,0,0.14); color: var(--warn); }
+.pill-off { background: rgba(255,255,255,0.07); color: var(--text-2); }
+.metric { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.metric small { font-size: 12px; font-weight: 400; color: var(--text-2); margin-left: 4px; }
+.metric .mono { font-family: var(--mono); font-size: 17px; font-weight: 500; }
+.meta { color: var(--text-3); font-size: 11.5px; margin-top: 6px; }
+.meta b { color: var(--text-2); font-weight: 500; }
+/* progress */
+.bar { height: 5px; background: var(--bg-inset); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 20%; border-radius: 4px; background: var(--accent); }
+/* server hero card */
+.hero {
+  grid-column: span 3; display: flex; align-items: center; gap: 22px;
+  background: linear-gradient(120deg, var(--bg-card) 62%, rgba(96,205,255,0.06));
+}
+.pulse { position: relative; width: 44px; height: 44px; flex-shrink: 0; }
+.pulse::before, .pulse::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: rgba(108,203,95,0.18);
+  animation: pulse 2.4s ease-out infinite;
+}
+.pulse::after { animation-delay: 1.2s; }
+.pulse .core { position: absolute; inset: 14px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 14px rgba(108,203,95,0.7); }
+@keyframes pulse { 0% { transform: scale(.55); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+.hero-info { flex: 1; }
+.hero-info h2 { font-size: 15px; font-weight: 600; }
+.hero-info p { color: var(--text-2); font-size: 12px; margin-top: 3px; }
+.hero-info p code { font-family: var(--mono); color: var(--accent); font-size: 11.5px; }
+.hero-stats { display: flex; gap: 30px; margin-right: 8px; }
+.hstat { text-align: right; }
+.hstat .v { font-family: var(--mono); font-size: 14px; color: var(--text); }
+.hstat .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3); margin-top: 3px; }
+/* activity strip */
+.section-label { font-size: 12px; color: var(--text-3); font-weight: 500; margin: 24px 0 10px; }
+.log {
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: var(--mono); font-size: 11px; padding: 14px 16px; line-height: 1.85;
+}
+.log .t { color: var(--text-3); margin-right: 10px; }
+.log .ok { color: var(--ok); } .log .info { color: var(--accent); } .log .warn { color: #e0c000; }
+/* ---------- status bar ---------- */
+.statusbar {
+  height: var(--statusbar-h); flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  display: flex; align-items: center; gap: 18px;
+  padding: 0 14px; font-size: 11.5px; color: var(--text-3);
+  background: rgba(0,0,0,0.18);
+}
+.statusbar .seg { display: flex; align-items: center; gap: 6px; }
+.statusbar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 7px rgba(108,203,95,0.7); }
+.statusbar code { font-family: var(--mono); color: var(--text-2); }
+.statusbar .right { margin-left: auto; font-family: var(--mono); }
+/* entrance */
+.card, .topbar, .log { animation: rise .35s ease both; }
+.card:nth-child(2) { animation-delay: .04s; } .card:nth-child(3) { animation-delay: .08s; }
+.card:nth-child(4) { animation-delay: .12s; } .card:nth-child(5) { animation-delay: .16s; } .card:nth-child(6) { animation-delay: .2s; }
+.log { animation-delay: .24s; }
+@keyframes rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<div class="window">
+
+  <!-- title bar -->
+  <div class="caption">
+    <div class="caption-title">
+      <div class="ico"><svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg></div>
+      <span>vrc-ytdlp Manager</span>
+    </div>
+    <div class="caption-buttons">
+      <div class="cap-btn"><svg viewBox="0 0 12 12"><line x1="2" y1="6" x2="10" y2="6"/></svg></div>
+      <div class="cap-btn"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7"/></svg></div>
+      <div class="cap-btn close"><svg viewBox="0 0 12 12"><line x1="3" y1="3" x2="9" y2="9"/><line x1="9" y1="3" x2="3" y2="9"/></svg></div>
+    </div>
+  </div>
+
+  <div class="body">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg></div>
+        <div class="brand-name">vrc-ytdlp<span>Manager</span></div>
+      </div>
+      <nav class="nav">
+        <a class="active" href="#"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Dashboard</a>
+        <a href="#"><svg viewBox="0 0 24 24"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/><path d="M3.3 7.3L12 12l8.7-4.7M12 22V12"/></svg>Components<span class="badge">2</span></a>
+        <a href="#"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="6" rx="2"/><rect x="2" y="13" width="20" height="6" rx="2"/><path d="M6 8h.01M6 16h.01"/></svg>Server</a>
+        <a href="#"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg>Cache</a>
+        <div class="nav-label">Settings</div>
+        <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h0a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.6h0a1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v0a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>Configuration</a>
+        <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><circle cx="10" cy="15" r="1" fill="currentColor"/><circle cx="15" cy="15" r="1" fill="currentColor"/></svg>Cookies</a>
+        <a href="#"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Logs</a>
+      </nav>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="subtitle">Everything healthy · last checked 12 s ago</div>
+        </div>
+        <div style="display:flex; gap:9px;">
+          <button class="btn btn-ghost">Run setup wizard</button>
+          <button class="btn btn-primary">Update all (2)</button>
+        </div>
+      </div>
+
+      <div class="content">
+        <div class="grid">
+
+          <div class="card hero">
+            <div class="pulse"><div class="core"></div></div>
+            <div class="hero-info">
+              <h2>Media server running</h2>
+              <p>Listening on <code>127.0.0.1:9000</code> · spawned from VRChat Tools directory</p>
+            </div>
+            <div class="hero-stats">
+              <div class="hstat"><div class="v">2 h 14 m</div><div class="k">Uptime</div></div>
+              <div class="hstat"><div class="v">3</div><div class="k">Streams</div></div>
+              <div class="hstat"><div class="v">31 s</div><div class="k">Last activity</div></div>
+            </div>
+            <button class="btn btn-ghost">Stop server</button>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title"><svg viewBox="0 0 24 24"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/></svg>Backend</div>
+              <span class="pill pill-warn">Update</span>
+            </div>
+            <div class="metric mono">v0.1.4</div>
+            <div class="meta">Latest <b>v0.1.6</b> · installed in VRChat Tools</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title"><svg viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M4 21h16"/></svg>yt-dlp</div>
+              <span class="pill pill-warn">Update</span>
+            </div>
+            <div class="metric mono">2026.05.21</div>
+            <div class="meta">Latest <b>2026.06.07</b> · checked daily</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title"><svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>ffmpeg</div>
+              <span class="pill pill-ok">Installed</span>
+            </div>
+            <div class="metric mono">7.1</div>
+            <div class="meta">Bundled build · <b>Tools\ffmpeg</b></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg>Cache</div>
+              <span class="pill pill-ok">20%</span>
+            </div>
+            <div class="metric">412<small>MB of 2 GB · 37 files</small></div>
+            <div class="bar"><i></i></div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>Cookies</div>
+              <span class="pill pill-ok">Fresh</span>
+            </div>
+            <div class="metric">2 h<small>since extraction</small></div>
+            <div class="meta">Source <b>Firefox</b> · auto-refresh on</div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <div class="card-title"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>Watchdog</div>
+              <span class="pill pill-off">Idle 31 s</span>
+            </div>
+            <div class="metric">10 m<small>idle shutdown</small></div>
+            <div class="meta">Server exits after inactivity</div>
+          </div>
+        </div>
+
+        <div class="section-label">Recent activity</div>
+        <div class="log">
+          <div><span class="t">14:32:09</span><span class="info">INFO</span>  registered stream id=3 url=youtube.com/watch?v=dQw4…</div>
+          <div><span class="t">14:32:10</span><span class="ok">OK</span>    pipeline started · yt-dlp → ffmpeg · cache miss</div>
+          <div><span class="t">14:30:44</span><span class="info">INFO</span>  served /stream/2 from cache (89.4 MB)</div>
+          <div><span class="t">14:18:02</span><span class="warn">WARN</span>  cookies older than 24 h refused by extractor, retried with fresh profile</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- status bar -->
+  <div class="statusbar">
+    <div class="seg"><span class="dot"></span> Server running</div>
+    <div class="seg">Port <code>9000</code></div>
+    <div class="seg">yt-dlp <code>2026.05.21</code></div>
+    <div class="right">v0.2.0</div>
+  </div>
+
+</div>
+
+</body>
+</html>

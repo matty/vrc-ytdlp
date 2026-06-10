@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/rustfmt_on_edit.py",
+            "statusMessage": "rustfmt"
+          }
+        ]
+      }
+    ]
+  }
+}

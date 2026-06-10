@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>vrc-ytdlp Manager — Slate &amp; Teal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0e;
+  --bg-sidebar: #0d0d12;
+  --bg-card: #111118;
+  --bg-card-hover: #14141c;
+  --bg-inset: #0c0c11;
+  --border: rgba(255,255,255,0.055);
+  --border-strong: rgba(255,255,255,0.10);
+  --accent: #7dcfb6;
+  --accent-dim: #4e9d87;
+  --accent-glow: rgba(125,207,182,0.16);
+  --text: #ecedee;
+  --text-2: #8b8d94;
+  --text-3: #54565e;
+  --ok: #4ade80;
+  --warn: #facc15;
+  --err: #f4564e;
+  --radius: 12px;
+  --radius-sm: 7px;
+  --font: "Schibsted Grotesk", system-ui, sans-serif;
+  --mono: "JetBrains Mono", Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  display: flex;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+/* ---------- sidebar ---------- */
+.sidebar {
+  width: 208px; flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  padding: 18px 10px 14px;
+}
+.brand { display: flex; align-items: center; gap: 10px; padding: 4px 10px 18px; }
+.brand-mark {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: linear-gradient(135deg, #79d0b5, #3c8e77);
+  display: grid; place-items: center;
+  box-shadow: 0 0 18px var(--accent-glow);
+}
+.brand-mark svg { width: 13px; height: 13px; fill: #07110d; }
+.brand-name { font-weight: 700; font-size: 13.5px; letter-spacing: -0.01em; }
+.brand-name span { display: block; font-weight: 400; font-size: 10px; color: var(--text-3); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 1px; }
+.nav { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.nav-label { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); padding: 14px 12px 6px; }
+.nav a {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: var(--radius-sm);
+  color: var(--text-2); text-decoration: none; font-weight: 500;
+  position: relative; transition: all .14s ease;
+}
+.nav a svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.nav a:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+.nav a.active {
+  color: var(--accent); background: var(--accent-glow);
+}
+.nav a.active::before {
+  content: ""; position: absolute; left: -10px; top: 7px; bottom: 7px; width: 2.5px;
+  border-radius: 2px; background: linear-gradient(var(--accent), var(--accent-dim));
+}
+.nav .badge {
+  margin-left: auto; font-family: var(--mono); font-size: 9.5px;
+  background: var(--warn); color: #1c1602; padding: 1.5px 6px; border-radius: 20px; font-weight: 500;
+}
+.sidebar-foot { margin-top: auto; padding: 10px 12px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.sidebar-foot .ver { font-family: var(--mono); font-size: 10.5px; color: var(--text-3); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px rgba(74,222,128,0.7); }
+/* ---------- main ---------- */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 22px 30px 0;
+}
+h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.02em; }
+.subtitle { color: var(--text-2); margin-top: 3px; font-size: 12.5px; }
+.btn {
+  font-family: var(--font); font-size: 12.5px; font-weight: 600;
+  border: none; cursor: pointer; border-radius: var(--radius-sm);
+  padding: 8px 16px; transition: all .14s ease;
+}
+.btn-primary {
+  background: linear-gradient(180deg, #84d6bd, #5fb89f);
+  color: #07130e; box-shadow: 0 2px 14px var(--accent-glow);
+}
+.btn-primary:hover { filter: brightness(1.08); box-shadow: 0 2px 20px rgba(125,207,182,0.3); }
+.btn-ghost { background: transparent; color: var(--text-2); border: 1px solid var(--border-strong); }
+.btn-ghost:hover { color: var(--text); border-color: rgba(255,255,255,0.2); }
+.content { padding: 24px 30px 30px; overflow-y: auto; }
+/* ---------- cards ---------- */
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px;
+  transition: all .15s ease; cursor: pointer; position: relative;
+}
+.card:hover { background: var(--bg-card-hover); border-color: var(--border-strong); transform: translateY(-1px); }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.card-title { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-2); font-weight: 600; }
+.card-title svg { width: 14px; height: 14px; stroke: var(--accent-dim); fill: none; stroke-width: 1.7; stroke-linecap: round; }
+.pill { font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 20px; letter-spacing: 0.03em; }
+.pill-ok { background: rgba(74,222,128,0.12); color: var(--ok); }
+.pill-warn { background: rgba(250,204,21,0.12); color: var(--warn); }
+.pill-off { background: rgba(255,255,255,0.06); color: var(--text-2); }
+.metric { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.metric small { font-size: 12px; font-weight: 500; color: var(--text-2); margin-left: 4px; }
+.metric .mono { font-family: var(--mono); font-size: 17px; font-weight: 500; }
+.meta { color: var(--text-3); font-size: 11.5px; margin-top: 6px; }
+.meta b { color: var(--text-2); font-weight: 500; }
+/* progress */
+.bar { height: 5px; background: var(--bg-inset); border-radius: 4px; margin-top: 12px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 20%; border-radius: 4px; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); box-shadow: 0 0 10px var(--accent-glow); }
+/* server hero card */
+.hero {
+  grid-column: span 3; display: flex; align-items: center; gap: 22px;
+  background: linear-gradient(120deg, var(--bg-card) 60%, rgba(125,207,182,0.05));
+}
+.hero:hover { transform: none; }
+.pulse { position: relative; width: 46px; height: 46px; flex-shrink: 0; }
+.pulse::before, .pulse::after {
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: rgba(74,222,128,0.16);
+  animation: pulse 2.4s ease-out infinite;
+}
+.pulse::after { animation-delay: 1.2s; }
+.pulse .core { position: absolute; inset: 14px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 16px rgba(74,222,128,0.8); }
+@keyframes pulse { 0% { transform: scale(.55); opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+.hero-info { flex: 1; }
+.hero-info h2 { font-size: 15px; font-weight: 700; }
+.hero-info p { color: var(--text-2); font-size: 12px; margin-top: 3px; }
+.hero-info p code { font-family: var(--mono); color: var(--accent); font-size: 11.5px; }
+.hero-stats { display: flex; gap: 30px; margin-right: 8px; }
+.hstat { text-align: right; }
+.hstat .v { font-family: var(--mono); font-size: 14px; color: var(--text); }
+.hstat .k { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); margin-top: 3px; }
+/* activity strip */
+.section-label { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-3); font-weight: 600; margin: 26px 0 10px; }
+.log {
+  background: var(--bg-inset); border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: var(--mono); font-size: 11px; padding: 14px 16px; line-height: 1.85;
+}
+.log .t { color: var(--text-3); margin-right: 10px; }
+.log .ok { color: var(--ok); } .log .info { color: var(--accent); } .log .warn { color: var(--warn); }
+/* entrance */
+.card, .topbar, .log { animation: rise .4s ease both; }
+.card:nth-child(2) { animation-delay: .05s; } .card:nth-child(3) { animation-delay: .1s; }
+.card:nth-child(4) { animation-delay: .15s; } .card:nth-child(5) { animation-delay: .2s; } .card:nth-child(6) { animation-delay: .25s; }
+.log { animation-delay: .3s; }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark"><svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg></div>
+    <div class="brand-name">vrc-ytdlp<span>Manager</span></div>
+  </div>
+  <nav class="nav">
+    <a class="active" href="#"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Dashboard</a>
+    <a href="#"><svg viewBox="0 0 24 24"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/><path d="M3.3 7.3L12 12l8.7-4.7M12 22V12"/></svg>Components<span class="badge">2</span></a>
+    <a href="#"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="6" rx="2"/><rect x="2" y="13" width="20" height="6" rx="2"/><path d="M6 8h.01M6 16h.01"/></svg>Server</a>
+    <a href="#"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/><path d="M3 12c0 1.7 4 3 9 3s9-1.3 9-3"/></svg>Cache</a>
+    <div class="nav-label">Settings</div>
+    <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1-1.6 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.6-1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h0a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.6h0a1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v0a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></svg>Configuration</a>
+    <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><circle cx="10" cy="15" r="1" fill="currentColor"/><circle cx="15" cy="15" r="1" fill="currentColor"/></svg>Cookies</a>
+    <a href="#"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Logs</a>
+  </nav>
+  <div class="sidebar-foot">
+    <span class="ver">v0.2.0</span>
+    <span class="dot" title="server running"></span>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <h1>Dashboard</h1>
+      <div class="subtitle">Everything healthy · last checked 12 s ago</div>
+    </div>
+    <div style="display:flex; gap:9px;">
+      <button class="btn btn-ghost">Run setup wizard</button>
+      <button class="btn btn-primary">Update all (2)</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="grid">
+
+      <div class="card hero">
+        <div class="pulse"><div class="core"></div></div>
+        <div class="hero-info">
+          <h2>Media server running</h2>
+          <p>Listening on <code>127.0.0.1:9000</code> · spawned from VRChat Tools directory</p>
+        </div>
+        <div class="hero-stats">
+          <div class="hstat"><div class="v">2 h 14 m</div><div class="k">Uptime</div></div>
+          <div class="hstat"><div class="v">3</div><div class="k">Streams</div></div>
+          <div class="hstat"><div class="v">31 s</div><div class="k">Last activity</div></div>
+        </div>
+        <button class="btn btn-ghost">Stop server</button>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/></svg>Backend</div>
+          <span class="pill pill-warn">Update</span>
+        </div>
+        <div class="metric mono">v0.1.4</div>
+        <div class="meta">Latest <b>v0.1.6</b> · installed in VRChat Tools</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M4 21h16"/></svg>yt-dlp</div>
+          <span class="pill pill-warn">Update</span>
+        </div>
+        <div class="metric mono">2026.05.21</div>
+        <div class="meta">Latest <b>2026.06.07</b> · checked daily</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>ffmpeg</div>
+          <span class="pill pill-ok">Installed</span>
+        </div>
+        <div class="metric mono">7.1</div>
+        <div class="meta">Bundled build · <b>Tools\ffmpeg</b></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg>Cache</div>
+          <span class="pill pill-ok">20%</span>
+        </div>
+        <div class="metric">412<small>MB of 2 GB · 37 files</small></div>
+        <div class="bar"><i></i></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>Cookies</div>
+          <span class="pill pill-ok">Fresh</span>
+        </div>
+        <div class="metric">2 h<small>since extraction</small></div>
+        <div class="meta">Source <b>Firefox</b> · auto-refresh on</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div class="card-title"><svg viewBox="0 0 24 24"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg>Watchdog</div>
+          <span class="pill pill-off">Idle 31 s</span>
+        </div>
+        <div class="metric">10 m<small>idle shutdown</small></div>
+        <div class="meta">Server exits after inactivity</div>
+      </div>
+    </div>
+
+    <div class="section-label">Recent activity</div>
+    <div class="log">
+      <div><span class="t">14:32:09</span><span class="info">INFO</span>  registered stream id=3 url=youtube.com/watch?v=dQw4…</div>
+      <div><span class="t">14:32:10</span><span class="ok">OK</span>    pipeline started · yt-dlp → ffmpeg · cache miss</div>
+      <div><span class="t">14:30:44</span><span class="info">INFO</span>  served /stream/2 from cache (89.4 MB)</div>
+      <div><span class="t">14:18:02</span><span class="warn">WARN</span>  cookies older than 24 h refused by extractor, retried with fresh profile</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
