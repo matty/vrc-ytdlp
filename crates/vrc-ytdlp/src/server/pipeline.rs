@@ -253,8 +253,6 @@ async fn spawn_tempfile_pipeline(
         bail!("yt-dlp download failed after {max_retries} attempts: {last_error}");
     }
 
-    let file_size = std::fs::metadata(&temp_file).map(|m| m.len()).unwrap_or(0);
-
     let (needs_transcode_video, needs_transcode_audio) =
         probe_codecs(&config.ffmpeg_path, &temp_file).await;
 
