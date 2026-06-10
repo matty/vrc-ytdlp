@@ -43,7 +43,7 @@ function Write-Skip($msg) { Write-Host "   $msg" -ForegroundColor DarkGray }
 if (-not $SkipBuild) {
     Write-Step "Building release binary"
     Push-Location $ScriptDir
-    cargo build --release
+    cargo build --release -p vrc-ytdlp
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
     Pop-Location
     Write-Ok "Built: $Exe"
@@ -156,7 +156,7 @@ if ((Test-Path $PluginDir) -and (Get-ChildItem $PluginDir -Recurse -Filter "*.py
 # 3. Read version from Cargo.toml
 # --------------------------------------------------------------------------
 
-$cargoToml = Get-Content (Join-Path $ScriptDir "Cargo.toml") -Raw
+$cargoToml = Get-Content (Join-Path $ScriptDir "crates/vrc-ytdlp/Cargo.toml") -Raw
 $pattern   = 'version\s*=\s*"([^"]+)"'
 $verMatch  = [regex]::Match($cargoToml, $pattern)
 $version   = if ($verMatch.Success) { $verMatch.Groups[1].Value } else { "unknown" }
