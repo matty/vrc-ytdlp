@@ -28,8 +28,6 @@ impl From<anyhow::Error> for CmdError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[allow(unused_imports)]
-    use anyhow::Context;
 
     #[test]
     fn anyhow_chain_flattens_into_code_and_message() {
