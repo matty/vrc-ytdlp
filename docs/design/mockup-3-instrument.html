@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>vrc-ytdlp Manager — Instrument Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #141310;
+  --panel: #1a1915;
+  --panel-2: #201e18;
+  --inset: #0e0d0b;
+  --line: #2c2a22;
+  --line-bright: #3d3a2e;
+  --amber: #ffb454;
+  --amber-dim: #b07b33;
+  --green: #8fd460;
+  --red: #ff6a55;
+  --text: #e8e4d8;
+  --text-2: #97927f;
+  --text-3: #5c584a;
+  --cond: "Barlow Condensed", sans-serif;
+  --mono: "IBM Plex Mono", Consolas, monospace;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: var(--sans); background: var(--bg); color: var(--text);
+  font-size: 12.5px; display: flex; overflow: hidden; -webkit-font-smoothing: antialiased;
+}
+/* subtle scanlines */
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9; opacity: .35;
+  background: repeating-linear-gradient(0deg, transparent 0 2px, rgba(0,0,0,0.12) 2px 3px);
+}
+/* ---------- sidebar ---------- */
+.sidebar {
+  width: 196px; flex-shrink: 0; background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex; flex-direction: column;
+}
+.brand { padding: 16px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.brand-mark {
+  width: 30px; height: 30px; border: 1.5px solid var(--amber); border-radius: 4px;
+  display: grid; place-items: center; color: var(--amber);
+  box-shadow: inset 0 0 8px rgba(255,180,84,0.15), 0 0 10px rgba(255,180,84,0.12);
+}
+.brand-mark svg { width: 11px; height: 11px; fill: currentColor; }
+.brand-name { font-family: var(--cond); font-weight: 700; font-size: 16px; letter-spacing: 0.04em; text-transform: uppercase; }
+.brand-name span { display: block; font-size: 10px; font-weight: 600; letter-spacing: 0.28em; color: var(--amber-dim); }
+.nav { display: flex; flex-direction: column; padding: 8px 0; }
+.nav a {
+  font-family: var(--cond); font-weight: 600; font-size: 14.5px; letter-spacing: 0.09em; text-transform: uppercase;
+  display: flex; align-items: center; gap: 11px; padding: 9px 16px;
+  color: var(--text-2); text-decoration: none; border-left: 2px solid transparent;
+  transition: all .1s linear;
+}
+.nav a svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: square; }
+.nav a:hover { color: var(--text); background: rgba(255,255,255,0.02); }
+.nav a.active { color: var(--amber); border-left-color: var(--amber); background: linear-gradient(90deg, rgba(255,180,84,0.10), transparent 70%); }
+.nav .badge { margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0;
+  border: 1px solid var(--amber-dim); color: var(--amber); padding: 0 5px; border-radius: 3px; }
+.sidebar-foot {
+  margin-top: auto; border-top: 1px solid var(--line); padding: 10px 16px;
+  font-family: var(--mono); font-size: 10px; color: var(--text-3);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.led { width: 8px; height: 8px; border-radius: 2px; background: var(--green); box-shadow: 0 0 7px var(--green); animation: blink 3s steps(1) infinite; }
+@keyframes blink { 0%, 92% { opacity: 1; } 96% { opacity: .35; } }
+/* ---------- main ---------- */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 22px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+h1 { font-family: var(--cond); font-size: 19px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+h1::before { content: "// "; color: var(--amber-dim); }
+.clock { font-family: var(--mono); font-size: 11px; color: var(--text-2); }
+.clock b { color: var(--green); font-weight: 500; }
+.btn {
+  font-family: var(--cond); font-weight: 700; font-size: 13.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  cursor: pointer; padding: 7px 16px; border-radius: 3px; transition: all .1s linear;
+}
+.btn-primary { background: var(--amber); border: 1px solid var(--amber); color: #211504; box-shadow: 0 0 14px rgba(255,180,84,0.25); }
+.btn-primary:hover { background: #ffc475; }
+.btn-ghost { background: transparent; border: 1px solid var(--line-bright); color: var(--text-2); }
+.btn-ghost:hover { color: var(--text); border-color: var(--text-3); }
+.content { padding: 18px 22px; overflow-y: auto; }
+/* ---------- panels ---------- */
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
+  padding: 13px 15px; position: relative; cursor: pointer; transition: border-color .1s linear;
+}
+.panel:hover { border-color: var(--line-bright); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
+.panel-title { font-family: var(--cond); font-weight: 600; font-size: 12.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-2); }
+.status { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.06em; }
+.status i { width: 7px; height: 7px; border-radius: 2px; }
+.s-ok { color: var(--green); } .s-ok i { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.s-warn { color: var(--amber); } .s-warn i { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
+.s-off { color: var(--text-3); } .s-off i { background: var(--text-3); }
+.readout { font-family: var(--mono); font-size: 19px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.readout small { font-size: 10.5px; font-weight: 400; color: var(--text-2); margin-left: 5px; }
+.sub { font-family: var(--mono); font-size: 10px; color: var(--text-3); margin-top: 6px; }
+.sub b { color: var(--text-2); font-weight: 500; }
+/* segmented meter */
+.meter { display: flex; gap: 3px; margin-top: 11px; }
+.meter i { flex: 1; height: 9px; border-radius: 1.5px; background: var(--inset); border: 1px solid var(--line); }
+.meter i.on { background: var(--amber); border-color: var(--amber); box-shadow: 0 0 5px rgba(255,180,84,0.5); }
+/* server panel spans */
+.span2 { grid-column: span 2; }
+.server-panel { display: flex; align-items: stretch; gap: 16px; }
+.gauge { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 6px; }
+.gauge .big-led { width: 16px; height: 16px; border-radius: 3px; background: var(--green); box-shadow: 0 0 14px var(--green); margin-bottom: 8px; }
+.gauge .lbl { font-family: var(--cond); font-size: 11px; font-weight: 700; letter-spacing: 0.2em; color: var(--green); }
+.server-stats { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 18px; align-content: center; }
+.kv { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; border-bottom: 1px dotted var(--line); padding-bottom: 3px; }
+.kv .k { color: var(--text-3); } .kv .v { color: var(--text); }
+.kv .v.hl { color: var(--amber); }
+.server-actions { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+/* log table */
+.section-bar {
+  display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px;
+}
+.section-bar h3 { font-family: var(--cond); font-size: 13px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-2); }
+.section-bar h3::before { content: "▸ "; color: var(--amber); }
+.section-bar a { font-family: var(--mono); font-size: 10px; color: var(--amber-dim); text-decoration: none; }
+.section-bar a:hover { color: var(--amber); }
+.log {
+  background: var(--inset); border: 1px solid var(--line); border-radius: 5px;
+  font-family: var(--mono); font-size: 11px; line-height: 2.0; padding: 10px 14px;
+  box-shadow: inset 0 2px 12px rgba(0,0,0,0.5);
+}
+.log .t { color: var(--text-3); margin-right: 12px; }
+.log .lvl { display: inline-block; width: 46px; }
+.log .ok { color: var(--green); } .log .info { color: var(--text-2); } .log .warn { color: var(--amber); }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark"><svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"/></svg></div>
+    <div class="brand-name">vrc-ytdlp<span>Control</span></div>
+  </div>
+  <nav class="nav">
+    <a class="active" href="#"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>Overview</a>
+    <a href="#"><svg viewBox="0 0 24 24"><path d="M21 16V8l-9-5-9 5v8l9 5 9-5z"/></svg>Components<span class="badge">2 UPD</span></a>
+    <a href="#"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="6"/><rect x="2" y="13" width="20" height="6"/></svg>Server</a>
+    <a href="#"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5"/></svg>Cache</a>
+    <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>Config</a>
+    <a href="#"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="9" r="1" fill="currentColor"/><circle cx="15" cy="10" r="1" fill="currentColor"/><circle cx="10" cy="15" r="1" fill="currentColor"/></svg>Cookies</a>
+    <a href="#"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>Logs</a>
+  </nav>
+  <div class="sidebar-foot">
+    <span>MGR v0.2.0</span>
+    <span class="led" title="link up"></span>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <h1>System overview</h1>
+    <div style="display:flex; align-items:center; gap:14px;">
+      <span class="clock">UPLINK <b>OK</b> · POLL 5s · 14:32:41</span>
+      <button class="btn btn-ghost">Wizard</button>
+      <button class="btn btn-primary">Update all [2]</button>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="grid">
+
+      <div class="panel span2 server-panel">
+        <div class="gauge">
+          <div class="big-led"></div>
+          <div class="lbl">RUN</div>
+        </div>
+        <div class="server-stats">
+          <div class="kv"><span class="k">ADDR</span><span class="v hl">127.0.0.1:9000</span></div>
+          <div class="kv"><span class="k">UPTIME</span><span class="v">02:14:09</span></div>
+          <div class="kv"><span class="k">PID</span><span class="v">18244</span></div>
+          <div class="kv"><span class="k">STREAMS</span><span class="v">3</span></div>
+          <div class="kv"><span class="k">IDLE</span><span class="v">31s / 600s</span></div>
+          <div class="kv"><span class="k">HEALTH</span><span class="v" style="color:var(--green)">200 OK</span></div>
+        </div>
+        <div class="server-actions">
+          <button class="btn btn-ghost">Stop</button>
+          <button class="btn btn-ghost">Restart</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">Backend</div>
+          <div class="status s-warn"><i></i>UPD</div>
+        </div>
+        <div class="readout">v0.1.4</div>
+        <div class="sub">LATEST <b>v0.1.6</b> · TOOLS DIR</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">yt-dlp</div>
+          <div class="status s-warn"><i></i>UPD</div>
+        </div>
+        <div class="readout">26.05.21</div>
+        <div class="sub">LATEST <b>26.06.07</b> · DAILY CHK</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">ffmpeg</div>
+          <div class="status s-ok"><i></i>OK</div>
+        </div>
+        <div class="readout">7.1</div>
+        <div class="sub">PATH <b>Tools\ffmpeg</b></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">Cookies</div>
+          <div class="status s-ok"><i></i>FRESH</div>
+        </div>
+        <div class="readout">-2h 04m</div>
+        <div class="sub">SRC <b>FIREFOX</b> · AUTO ON</div>
+      </div>
+
+      <div class="panel span2">
+        <div class="panel-head">
+          <div class="panel-title">Cache occupancy</div>
+          <div class="status s-ok"><i></i>20%</div>
+        </div>
+        <div class="readout">412 MB<small>/ 2048 MB · 37 FILES</small></div>
+        <div class="meter">
+          <i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-bar">
+      <h3>Activity feed</h3>
+      <a href="#">OPEN FULL LOG →</a>
+    </div>
+    <div class="log">
+      <div><span class="t">14:32:09</span><span class="lvl info">INFO</span> registered stream id=3 url=youtube.com/watch?v=dQw4…</div>
+      <div><span class="t">14:32:10</span><span class="lvl ok">OK</span> pipeline started · yt-dlp → ffmpeg · cache miss</div>
+      <div><span class="t">14:30:44</span><span class="lvl info">INFO</span> served /stream/2 from cache (89.4 MB)</div>
+      <div><span class="t">14:18:02</span><span class="lvl warn">WARN</span> cookies older than 24h refused by extractor, retried with fresh profile</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
